@@ -2,6 +2,8 @@
 
 (using menhir 2.0)
 
+(using ctypes 0.3)
+
 (name fx)
 
 (generate_opam_files true)

@@ -4,4 +4,14 @@
 (ocamllex lexer)
 
 (library
- (name fx))
+ (name fx)
+ (libraries
+  wasm
+  core
+  core_unix.command_unix
+  core_unix.filename_unix
+  base
+  stdio)
+ (inline_tests)
+ (preprocess
+  (pps ppx_inline_test ppx_assert ppx_expect ppx_jane)))

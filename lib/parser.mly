@@ -10,6 +10,7 @@
 %token DEF
 %token DOT
 %token LBRACE RBRACE
+%token COMMA
 %token EOF
 
 %type <Syntax.t option> program
@@ -24,6 +25,7 @@ simple_expr
     : INT { Uint $1 }
     | IDENT { Uvar $1 }
     | simple_expr DOT IDENT { Uselect ($1, $3) }
+    | LBRACE record_fields RBRACE { Urecord $2 }
 
 expr
     : simple_expr { $1 }
@@ -34,5 +36,11 @@ expr
 
 pattern
     : IDENT { Upat_var $1 }
+
+record_fields
+    : separated_list(COMMA, record_field) { $1 }
+
+record_field
+    : IDENT EQUAL expr { ($1, $3) }
 
 

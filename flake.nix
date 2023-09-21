@@ -1,5 +1,5 @@
 {
-  description = "A flake demonstrating how to build OCaml projects with Dune";
+  description = "Fx";
 
   # Flake dependency specification
   #
@@ -13,59 +13,46 @@
   #
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    devenv.url = "github:cachix/devenv";
     nix2container.url = "github:nlewo/nix2container";
     nix2container.inputs.nixpkgs.follows = "nixpkgs";
     mk-shell-bin.url = "github:rrbutani/nix-mk-shell-bin";
-    # Convenience functions for writing flakes
-    flake-utils.url = "github:numtide/flake-utils";
     # Precisely filter files copied to the nix store
     nix-filter.url = "github:numtide/nix-filter";
+    gitignore.url = "github:hercules-ci/gitignore.nix";
+    pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
   nixConfig = {
-    extra-trusted-public-keys =
-      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
+    extra-trusted-public-keys = "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=";
     extra-substituters = "https://devenv.cachix.org";
   };
 
-  outputs = inputs@{ flake-parts, nix-filter, ... }:
+  outputs =
+    inputs @ { flake-parts
+    , nix-filter
+    , pre-commit-hooks
+    , ...
+    }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ inputs.devenv.flakeModule ];
-      systems =
-        [ "x86_64-linux" "x86_64-darwin" "aarch64-linux" "aarch64-darwin" ];
+      imports = [ ];
+      systems = [ "x86_64-linux" "x86_64-darwin" "aarch64-linux" "aarch64-darwin" ];
 
-      perSystem = { config, pkgs, ... }:
+      perSystem =
+        { self'
+        , config
+        , pkgs
+        , system
+        , ...
+        }:
         let
           # Legacy packages that have not been converted to flakes
           # OCaml packages available on nixpkgs
-          ocamlPackages = pkgs.ocaml-ng.ocamlPackages_4_14.overrideScope'
-            (_self: super: {
-              ocaml = super.ocaml.override { flambdaSupport = true; };
-            });
+          ocamlPackages =
+            pkgs.ocaml-ng.ocamlPackages_5_0.overrideScope'
+              (_self: super: {
+                ocaml = super.ocaml.override { flambdaSupport = true; };
+              });
 
-          ocaml5Packages = pkgs.ocaml-ng.ocamlPackages_5_0.overrideScope'
-            (_self: super: {
-              ocaml = super.ocaml.override { flambdaSupport = true; };
-            });
-
-          fx-deps = op: with op; [ menhir ];
-
-          fx-dev = op:
-            with op; [
-              odoc
-              # OCaml editor support
-              ocaml-lsp
-              # Nicely formatted types on hover
-              ocamlformat-rpc-lib
-              # Fancy REPL thing
-              utop
-              pkgs.opam
-
-              dune_3
-
-              menhir
-            ];
           # Library functions from nixpkgs
 
           # Filtered sources (prevents unecessary rebuilds)
@@ -77,6 +64,7 @@
                 "dune-project"
                 "dune"
                 "fx.opam"
+                (nix-filter.lib.matchExt "h")
                 (nix-filter.lib.matchExt "ml")
                 (nix-filter.lib.matchExt "mli")
                 (nix-filter.lib.matchExt "mly")
@@ -93,67 +81,36 @@
             };
           };
 
-          mk-fx = ocamlPackages:
-            ocamlPackages.buildDunePackage {
-              pname = "fx";
-              version = "0.1.0";
-              duneVersion = "3";
-              src = sources.ocaml;
-              buildInputs = fx-deps ocamlPackages;
-              nativeBuildInputs = fx-dev ocamlPackages;
-              doCheck = true;
-            };
+          fx-deps = with ocamlPackages; [
+            menhir
+            wasm
+            core
+            base
+            stdio
+            ppx_inline_test
+            ppx_assert
+            ppx_expect
+            ppx_jane
+            core_unix
+          ];
 
-          mk-shell = ocamlPackages: {
-            name = "fx";
+          fx-dev = with ocamlPackages; [
+            odoc
+            # OCaml editor support
+            ocaml-lsp
+            # Nicely formatted types on hover
+            ocamlformat-rpc-lib
+            # Fancy REPL thing
+            utop
+            pkgs.opam
 
-            devcontainer.enable = true;
-            devcontainer.settings.updateContentCommand = "";
-
-            difftastic.enable = true;
-
-            languages = {
-              ocaml = {
-                enable = true;
-                packages = ocamlPackages;
-              };
-            };
-
-            pre-commit.settings.deadnix.edit = true;
-
-            pre-commit.hooks = {
-              # nix specific
-              nixfmt.enable = true;
-              statix.enable = true;
-              deadnix.enable = true;
-            };
-
-            languages.nix.enable = true;
-
-            # TODO: add a custom pre-commit hook to run `dune build @fmt`
-
-            # Development tools
-            packages = [
-              # Source file formatting
-              pkgs.nixpkgs-fmt
-              pkgs.ocamlformat
-              # For `dune build --watch ...`
-              pkgs.fswatch
-              # For `dune build @doc`
-              ocamlPackages.odoc
-              # OCaml editor support
-              ocamlPackages.ocaml-lsp
-              # Nicely formatted types on hover
-              ocamlPackages.ocamlformat-rpc-lib
-              # Fancy REPL thing
-              ocamlPackages.utop
-
-              pkgs.clang_16
-
-              pkgs.act
-            ] ++ fx-deps ocamlPackages ++ fx-dev ocamlPackages;
-          };
-        in {
+            dune_3
+          ];
+          # TODO: add a custom pre-commit hook to run `dune build @fmt`
+          # TODO: support hydra builds
+          # TODO: support docker builds
+        in
+        {
           # Exposed packages that can be built or run with `nix build` or
           # `nix run` respectively:
           #
@@ -166,10 +123,105 @@
             #     $ nix build
             #     $ nix run -- <args?>
             #
-            default = config.packages.fx;
+            default = ocamlPackages.buildDunePackage {
+              pname = "fx";
+              version = "0.1.0";
+              duneVersion = "3";
+              src = sources.ocaml;
+              buildInputs = fx-deps;
+              nativeBuildInputs = fx-dev;
+              doCheck = true;
+              checkPhase = ''
+                dune runtest
+              '';
+            };
+          };
 
-            fx = mk-fx ocamlPackages;
-            fx-multicore = mk-fx ocaml5Packages;
+          checks = {
+            pre-commit-check = pre-commit-hooks.lib.${system}.run {
+              src = ./.;
+              hooks = {
+                nixpkgs-fmt.enable = true;
+                yamllint.enable = true;
+                statix.enable = true;
+                deadnix.enable = true;
+                dune-fmt.enable = true;
+                dune-test = {
+                  enable = true;
+                  name = "dune test";
+                  entry = "dune runtest";
+                  pass_filenames = false;
+                };
+                # TODO: add a custom pre-commit hook to run `dune build @fmt and @runtest`
+              };
+            };
+
+            # Run tests for the `fx` package
+            fx =
+              let
+                # Patches calls to dune commands to produce log-friendly output
+                # when using `nix ... --print-build-log`. Ideally there would be
+                # support for one or more of the following:
+                #
+                # In Dune:
+                #
+                # - have workspace-specific dune configuration files
+                #
+                # In NixPkgs:
+                #
+                # - allow dune flags to be set in in `pkgs.ocamlPackages.buildDunePackage`
+                # - alter `pkgs.ocamlPackages.buildDunePackage` to use `--display=short`
+                # - alter `pkgs.ocamlPackages.buildDunePackage` to allow `--config-file=FILE` to be set
+                patchDuneCommand =
+                  let
+                    subcmds = [ "build" "test" "runtest" "install" ];
+                  in
+                  pkgs.lib.replaceStrings
+                    (pkgs.lib.lists.map (subcmd: "dune ${subcmd}") subcmds)
+                    (pkgs.lib.lists.map (subcmd: "dune ${subcmd} --display=short")
+                      subcmds);
+              in
+              self'.packages.${system}.fx.overrideAttrs (oldAttrs: {
+                name = "check-${oldAttrs.name}";
+                doCheck = true;
+                buildPhase = patchDuneCommand oldAttrs.buildPhase;
+                checkPhase = patchDuneCommand oldAttrs.checkPhase;
+                # skip installation (this will be tested in the `fx-app` check)
+                installPhase = "echo 'skipping install'";
+              });
+
+            # Check Dune and OCaml formatting
+            dune-fmt =
+              pkgs.runCommand "check-dune-fmt"
+                {
+                  nativeBuildInputs = [ pkgs.ocamlformat ] ++ fx-deps;
+                } ''
+                echo "checking dune and ocaml formatting"
+                dune build \
+                  --display=short \
+                  --no-print-directory \
+                  --root="${sources.ocaml}" \
+                  --build-dir="$(pwd)/_build" \
+                  @fmt
+                touch $out
+              '';
+
+            # Check documentation generation
+            dune-doc =
+              pkgs.runCommand "check-dune-doc"
+                {
+                  ODOC_WARN_ERROR = "true";
+                  nativeBuildInputs = [ pkgs.ocamlPackages.odoc ] ++ fx-deps;
+                } ''
+                echo "checking ocaml documentation"
+                dune build \
+                  --display=short \
+                  --no-print-directory \
+                  --root="${sources.ocaml}" \
+                  --build-dir="$(pwd)/_build" \
+                  @doc
+                touch $out
+              '';
           };
 
           # Development shells
@@ -184,8 +236,34 @@
           #    $ echo "use flake" > .envrc && direnv allow
           #    $ dune build @test
           #
-          devenv.shells.default = mk-shell ocamlPackages;
-          devenv.shells.multicore = mk-shell ocaml5Packages;
+          # devenv.shells.default = mk-shell ocamlPackages;
+          devShells = {
+            default = pkgs.mkShell {
+              inherit (self'.checks.pre-commit-check) shellHook;
+
+              packages = with pkgs;
+                [
+                  # Source file formatting
+                  pkgs.nixpkgs-fmt
+                  pkgs.ocamlformat
+                  # For `dune build --watch ...`
+                  pkgs.fswatch
+                  # For `dune build @doc`
+                  ocamlPackages.odoc
+                  # OCaml editor support
+                  ocamlPackages.ocaml-lsp
+                  # Nicely formatted types on hover
+                  ocamlPackages.ocamlformat-rpc-lib
+                  # Fancy REPL thing
+                  ocamlPackages.utop
+                  pkgs.act
+                ]
+                ++ fx-deps
+                ++ fx-dev;
+
+              inputsFrom = [ config.packages.default ];
+            };
+          };
         };
     };
 }

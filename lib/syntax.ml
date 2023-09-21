@@ -1,22 +1,7 @@
-module Primop = struct
-  type t =
-    | Add
-    | Sub
-    | Mul
-    | Div
-    | Eq
-    | Neq
-    | Lt
-    | Lte
-    | Gt
-    | Gte
-    | And
-    | Or
-    | Not
-end
+open Base
 
 module Symbol = struct
-  type t = Symbol of string
+  type t = Symbol of string [@@deriving compare, sexp]
 
   let of_string s = Symbol s
 end
@@ -30,6 +15,7 @@ type t =
   | Ulet of pat * t * t
   | Ulet_fun of Symbol.t * closure * t
   | Udef of Symbol.t * closure * t
+[@@deriving compare, sexp]
 
-and closure = Uclosure of pat * t
-and pat = Upat_var of Symbol.t
+and closure = Uclosure of pat * t [@@deriving compare, sexp]
+and pat = Upat_var of Symbol.t [@@deriving compare, sexp]

@@ -1,6 +1,8 @@
 {
     open Parser
     open Syntax
+
+    exception SyntaxError of { token: string; start: int; end_: int }
 }
 
 let space = [' ' '\t' '\n' '\r']
@@ -20,11 +22,9 @@ rule token = parse
 | "{" { LBRACE }
 | "}" { RBRACE }
 | "." { DOT }
+| "," { COMMA }
 | number { INT (int_of_string (Lexing.lexeme lexbuf)) }
 | ident { IDENT (Symbol.of_string (Lexing.lexeme lexbuf)) }
-| _
-    { failwith
-        (Printf.sprintf "unknown token %s near characters %d-%d"
-           (Lexing.lexeme lexbuf)
-           (Lexing.lexeme_start lexbuf)
-           (Lexing.lexeme_end lexbuf)) }
+| _ { raise (SyntaxError { token=(Lexing.lexeme lexbuf);
+                           start=(Lexing.lexeme_start lexbuf);
+                           end_=(Lexing.lexeme_end lexbuf) }) }

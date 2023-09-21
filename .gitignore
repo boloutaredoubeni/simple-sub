@@ -34,3 +34,6 @@ _opam/
 .devenv/
 .pre-commit-config.yaml
 result
+
+# Rust
+target/
