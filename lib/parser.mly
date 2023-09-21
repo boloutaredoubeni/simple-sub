@@ -1,5 +1,6 @@
 %{
     open Syntax
+    open Text
 %}
 
 %token <int> INT
@@ -15,27 +16,48 @@
 
 %type <Syntax.t option> program
 %start program
-%%
+%% 
 
 program
-    : EOF { None }
-    | expr EOF { Some $1 }
+    : expr? EOF { $1 }
 
 simple_expr
-    : INT { Uint $1 }
-    | IDENT { Uvar $1 }
-    | simple_expr DOT IDENT { Uselect ($1, $3) }
-    | LBRACE record_fields RBRACE { Urecord $2 }
+    : INT { Uint { value=$1; span=Span.create $sloc } }
+    | IDENT { Uvar { value=$1; span=Span.create $sloc } }
+    | simple_expr DOT IDENT { Uselect { value=$1; field=$3; span=Span.create $sloc } }
+    | LBRACE record_fields RBRACE { Urecord { fields=$2; span=Span.create $sloc } }
 
 expr
     : simple_expr { $1 }
-    | simple_expr expr  { Uapp ($1, $2) }
-    | LET pattern EQUAL expr IN expr { Ulet ($2, $4, $6) }
-    | LET IDENT pattern RIGHT_ARROW expr IN expr { Ulet_fun($2, Uclosure ($3, $5), $7)  }
-    | DEF IDENT pattern EQUAL expr IN expr { Udef ($2, Uclosure ($3, $5), $7) }
+    | simple_expr expr  { Uapp{ fn=$1; value=$2; span=Span.create $sloc } }
+    | LET pattern EQUAL expr IN expr { Ulet { pattern=$2; value=$4; app=$6; span=Span.create $sloc } }
+    | LET IDENT pattern RIGHT_ARROW expr IN expr { 
+        Ulet_fun { 
+            name = $2; 
+            closure = Uclosure  { 
+                    parameter = $3; 
+                    value = $5; 
+                    span = Span.create ($startpos($3), $startpos($5)) 
+                }; 
+                app = $7;
+                span = Span.create $sloc  
+            }
+        }
+    | DEF IDENT pattern EQUAL expr IN expr { 
+        Udef { 
+            name = $2; 
+            closure = Uclosure  { 
+                    parameter = $3; 
+                    value = $5; 
+                    span = Span.create ($startpos($3), $startpos($5)) 
+                }; 
+                app = $7;
+                span = Span.create $sloc
+            }      
+        }
 
 pattern
-    : IDENT { Upat_var $1 }
+    : IDENT { Upat_var { value=$1; span=Span.create $sloc } }
 
 record_fields
     : separated_list(COMMA, record_field) { $1 }

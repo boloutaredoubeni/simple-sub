@@ -106,7 +106,6 @@
 
             dune_3
           ];
-          # TODO: add a custom pre-commit hook to run `dune build @fmt`
           # TODO: support hydra builds
           # TODO: support docker builds
         in
@@ -152,7 +151,6 @@
                   entry = "dune runtest";
                   pass_filenames = false;
                 };
-                # TODO: add a custom pre-commit hook to run `dune build @fmt and @runtest`
               };
             };
 

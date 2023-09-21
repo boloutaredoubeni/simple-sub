@@ -29,6 +29,7 @@ module Make (S : S) : T = struct
       [%map_open.Command
         let print_ast = flag "-dump-ast" no_arg ~doc:"FILE dump ast to file"
         and filename =
+          (* FIXME: '-' is not a real file, should drop into 'repl' mode *)
           anon (maybe_with_default "-" ("filename" %: Filename_unix.arg_type))
         in
         let (module Cli_runner) =
@@ -123,9 +124,12 @@ module Tests : sig end = struct
    (command/src/command.ml.Exit_called (status 0))
     |}]
 
-  let%expect_test "cli build info" =
-    let run_it = run_it "test-cli" in
-    run_it [ "-build-info" ];
+  let%expect_test "ast dump no file" =
+    run_it "printer" [ "-dump-ast" ];
+    [%expect {| File - not found |}]
+
+  let%expect_test "build_info" =
+    run_it "test-cli" [ "-build-info" ];
     [%expect
       {|
    FXL
@@ -133,10 +137,26 @@ module Tests : sig end = struct
     |}]
 
   let%expect_test "cli has dump-ast" =
-    let run_it = run_it "printer" in
     let module Temp = MakeFxTemp (struct
       let prefix = "print"
     end) in
-    Temp.with_file "" (fun file -> run_it [ "-dump-ast"; file ]);
-    [%expect {| |}]
+    Temp.with_file "" (fun file -> run_it "printer" [ "-dump-ast"; file ]);
+    [%expect
+      {| (Uint(value 0)(span(Span(filename"")(start(Position(line 0)(column 0)))(finish(Position(line 0)(column 0)))))) |}]
+
+  let%expect_test "ast dump nonsense" =
+    let module Temp = MakeFxTemp (struct
+      let prefix = "print"
+    end) in
+    Temp.with_file "- 9 asdasd--" (fun file ->
+        run_it "printer" [ "-dump-ast"; file ]);
+    [%expect {| Error: ("Fx__Lexer.SyntaxError(\"\", \"-\", _)") |}]
+
+  let%expect_test "ast dump valid" =
+    let module Temp = MakeFxTemp (struct
+      let prefix = "print"
+    end) in
+    Temp.with_file "42" (fun file -> run_it "printer" [ "-dump-ast"; file ]);
+    [%expect
+      {| (Uint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 end

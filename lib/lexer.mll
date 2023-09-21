@@ -1,8 +1,9 @@
 {
     open Parser
     open Syntax
+    open Text
 
-    exception SyntaxError of { token: string; start: int; end_: int }
+    exception SyntaxError of { filename: string; token: string; position: Position.t }
 }
 
 let space = [' ' '\t' '\n' '\r']
@@ -23,8 +24,12 @@ rule token = parse
 | "}" { RBRACE }
 | "." { DOT }
 | "," { COMMA }
+| eof { EOF }
 | number { INT (int_of_string (Lexing.lexeme lexbuf)) }
 | ident { IDENT (Symbol.of_string (Lexing.lexeme lexbuf)) }
-| _ { raise (SyntaxError { token=(Lexing.lexeme lexbuf);
-                           start=(Lexing.lexeme_start lexbuf);
-                           end_=(Lexing.lexeme_end lexbuf) }) }
+| _ { raise (SyntaxError { 
+        filename=(Lexing.lexeme_start_p lexbuf).pos_fname; 
+        token=Lexing.lexeme lexbuf; 
+        position=Position.of_lexing_position(Lexing.lexeme_start_p lexbuf) 
+    }) 
+}
