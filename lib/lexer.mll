@@ -1,6 +1,5 @@
 {
     open Parser
-    open Syntax
     open Text
 
     exception SyntaxError of { filename: string; token: string; position: Position.t }
@@ -18,6 +17,7 @@ rule token = parse
 | "let" { LET }
 | "in" { IN }
 | "def" { DEF }
+| "fn" { FN }
 | "=" { EQUAL }
 | "->" { RIGHT_ARROW }
 | "{" { LBRACE }

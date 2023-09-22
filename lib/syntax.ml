@@ -1,12 +1,6 @@
 open Core
 open Text
 
-module Symbol = struct
-  type t = Symbol of string [@@deriving compare, sexp]
-
-  let of_string s = Symbol s
-end
-
 type t =
   | Uint of { value : int; span : (Span.span[@compare.ignore]) }
   | Uvar of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
@@ -38,6 +32,7 @@ type t =
       app : t;
       span : (Span.span[@compare.ignore]);
     }
+  | Ulambda of { closure : closure }
 [@@deriving compare, sexp]
 
 and closure =
@@ -66,6 +61,7 @@ module Spanned : Span.SPANNED = struct
     | Uselect { span; _ } -> span
     | Ulet { span; _ } -> span
     | Ulet_fun { span; _ } -> span
+    | Ulambda { closure = Uclosure { span; _ }; _ } -> span
     | Udef { span; _ } -> span
 end
 

@@ -32,7 +32,7 @@ module Make (S : S) : T = struct
          match Sys_unix.file_exists filename with
          | `Yes -> S.filename
          | `No | `Unknown -> raise (File_not_found filename))
-    |> In_channel.read_all |> Syntax.parse
+    |> In_channel.read_all |> Syntax.parse |> Or_error.ok_exn
     |> (fun ast ->
          if print_ast then print_endline (Sexp.to_string (Syntax.sexp_of_t ast));
          ast)

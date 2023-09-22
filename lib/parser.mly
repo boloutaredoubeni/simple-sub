@@ -4,11 +4,11 @@
 %}
 
 %token <int> INT
-%token <Syntax.Symbol.t> IDENT
+%token <Text.Symbol.t> IDENT
 %token LET
 %token EQUAL RIGHT_ARROW
 %token IN
-%token DEF
+%token DEF FN
 %token DOT
 %token LBRACE RBRACE
 %token COMMA
@@ -43,6 +43,10 @@ expr
                 span = Span.create $sloc  
             }
         }
+    | FN pattern RIGHT_ARROW expr { 
+        let lambda = Uclosure { parameter=$2; value=$4; span=Span.create $sloc } in 
+        Ulambda { closure=lambda }
+    }
     | DEF IDENT pattern EQUAL expr IN expr { 
         Udef { 
             name = $2; 

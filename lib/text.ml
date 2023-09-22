@@ -67,3 +67,14 @@ module Span = struct
         ~expect:false
   end
 end
+
+module Symbol = struct
+  module T = struct
+    type t = Symbol of string [@@deriving compare, sexp]
+
+    let of_string s = Symbol s
+  end
+
+  include T
+  include Comparable.Make (T)
+end
