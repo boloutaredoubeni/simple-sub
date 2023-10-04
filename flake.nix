@@ -105,6 +105,7 @@
             pkgs.opam
 
             dune_3
+            menhir
           ];
           # TODO: support hydra builds
           # TODO: support docker builds

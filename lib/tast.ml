@@ -277,3 +277,5 @@ module Tests = struct
     in
     [%test_result: int] (compare left right) ~expect:0
 end
+
+include T

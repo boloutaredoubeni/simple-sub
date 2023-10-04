@@ -28,6 +28,8 @@ module Make (S : S) : T = struct
     Command.basic ~summary:"Fx Programming Language"
       [%map_open.Command
         let print_ast = flag "-dump-ast" no_arg ~doc:"FILE dump ast to file"
+        (* TODO: make type simplification 'optional' *)
+        and print_tast = flag "-dump-tast" no_arg ~doc:"FILE infer type of file"
         and filename =
           (* FIXME: '-' is not a real file, should drop into 'repl' mode *)
           anon (maybe_with_default "-" ("filename" %: Filename_unix.arg_type))
@@ -36,6 +38,7 @@ module Make (S : S) : T = struct
           make_runner
             (module struct
               let print_ast = print_ast
+              let print_tast = print_tast
               let filename = filename
             end)
         in
@@ -97,6 +100,7 @@ module Tests : sig end = struct
     === flags ===
 
       [-dump-ast]                . FILE dump ast to file
+      [-dump-tast]               . FILE infer type of file
       [-build-info]              . print info about this build and exit
       [-version]                 . print the version of this build and exit
       [-help], -?                . print this help text and exit
@@ -126,7 +130,7 @@ module Tests : sig end = struct
 
   let%expect_test "ast dump no file" =
     run_it "printer" [ "-dump-ast" ];
-    [%expect {| File - not found |}]
+    [%expect {| ("Fx__Runner.File_not_found(\"-\")") |}]
 
   let%expect_test "build_info" =
     run_it "test-cli" [ "-build-info" ];
@@ -150,7 +154,7 @@ module Tests : sig end = struct
     end) in
     Temp.with_file "- 9 asdasd--" (fun file ->
         run_it "printer" [ "-dump-ast"; file ]);
-    [%expect {| Error: ("Fx__Lexer.SyntaxError(\"\", \"-\", _)") |}]
+    [%expect {| ("Fx__Lexer.SyntaxError(\"\", \"-\", _)") |}]
 
   let%expect_test "ast dump valid" =
     let module Temp = MakeFxTemp (struct
@@ -159,4 +163,13 @@ module Tests : sig end = struct
     Temp.with_file "42" (fun file -> run_it "printer" [ "-dump-ast"; file ]);
     [%expect
       {| (Uint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
+
+  let%expect_test "type ast" =
+    let module Temp = MakeFxTemp (struct
+      let prefix = "print"
+    end) in
+    Temp.with_file "42" (fun file ->
+        run_it "printer tast" [ "-dump-tast"; file ]);
+    [%expect
+      {| (Tint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 end

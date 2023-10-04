@@ -100,106 +100,112 @@ functor
       | Sch_poly (PolymorhicType { level; _ }) -> level
   end
 
-module Make (Fresh_var : FRESH_VAR) = struct
-  open Syntax
-  module TypeScheme = Scheme (Fresh_var)
-
-  module Self = struct
-    type t =
-      | Self of {
-          self : (Symbol.t, TypeScheme.t, Symbol.comparator_witness) Map.t;
-          level : Level.t;
-        }
-
-    let create () =
-      Self { self = Map.empty (module Symbol); level = Level.default }
-
-    let contains (Self { self; _ }) v = Map.mem self v
-    let level (Self { level; _ }) = level
-
-    let level_up (Self { self; level }) =
-      Self { self; level = Level.level_up level }
-
-    let find (Self { self; _ }) v = Map.find_exn self v
-
-    let add (Self { self; level }) ~key ~data =
-      Self { self = Map.add_exn self ~key ~data; level }
+module Constrain = struct
+  module type T = sig
+    val f : SimpleType.t -> SimpleType.t -> unit
   end
 
-  module Type_term (*: VISITOR *) = struct
-    type self = Self.t
-    type ast = Tast.T.t
-    type closure = Tast.Closure.t
-    type pattern = Tast.Pattern.t * Self.t
-
-    module Constrain = struct
-      module type T = sig
-        val f : SimpleType.t -> SimpleType.t -> unit
+  module Make () : T = struct
+    module Constraint = struct
+      module T = struct
+        type t = Constraint of { lhs : SimpleType.t; rhs : SimpleType.t }
+        [@@deriving sexp, compare]
       end
 
-      module Make () : T = struct
-        module Constraint = struct
-          module T = struct
-            type t = Constraint of { lhs : SimpleType.t; rhs : SimpleType.t }
-            [@@deriving sexp, compare]
-          end
-
-          include T
-          include Comparable.Make (T)
-        end
-
-        let cache =
-          object
-            val mutable cache = Set.empty (module Constraint)
-            method contains c = Set.mem cache c
-            method add c = cache <- Set.add cache c
-          end
-
-        open Constraint
-
-        let rec constrain (Constraint { lhs; rhs } as c) =
-          if not (cache#contains c) then (
-            cache#add c;
-            match (lhs, rhs) with
-            | Sint_type, Sint_type -> ()
-            | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
-                Sfunction_type { argument = rhs_arg; result = rhs_res } ) ->
-                constrain (Constraint { lhs = lhs_arg; rhs = rhs_arg });
-                constrain (Constraint { lhs = lhs_res; rhs = rhs_res })
-            | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields }
-              ->
-                List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
-                    match
-                      List.Assoc.find lhs_fields rhs_field ~equal:Symbol.equal
-                    with
-                    | Some lhs_type ->
-                        constrain
-                          (Constraint { lhs = lhs_type; rhs = rhs_type })
-                    | None -> raise (Missing_record_field { value = rhs_field }))
-            | Svar_type { state = lhs_state }, rhs ->
-                Variable.upper_bounds lhs_state
-                := rhs :: !(Variable.upper_bounds lhs_state);
-                List.iter
-                  !(Variable.lower_bounds lhs_state)
-                  ~f:(fun lhs -> constrain (Constraint { lhs; rhs }))
-            | lhs, Svar_type { state = rhs_state } ->
-                Variable.lower_bounds rhs_state
-                := lhs :: !(Variable.lower_bounds rhs_state);
-                List.iter
-                  !(Variable.upper_bounds rhs_state)
-                  ~f:(fun rhs -> constrain (Constraint { lhs; rhs }))
-            | lhs, rhs -> raise (Constrain_error { lhs; rhs }))
-          else ()
-
-        let f lhs rhs = constrain (Constraint { lhs; rhs })
-      end
+      include T
+      include Comparable.Make (T)
     end
 
-    let create () =
-      let open Self in
-      Self { self = Map.empty (module Symbol); level = Level.default }
+    let cache =
+      object
+        val mutable cache = Set.empty (module Constraint)
+        method contains c = Set.mem cache c
+        method add c = cache <- Set.add cache c
+      end
 
-    let rec visit self =
+    open Constraint
+
+    let rec constrain (Constraint { lhs; rhs } as c) =
+      if not (cache#contains c) then (
+        cache#add c;
+        match (lhs, rhs) with
+        | Sint_type, Sint_type -> ()
+        | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
+            Sfunction_type { argument = rhs_arg; result = rhs_res } ) ->
+            constrain (Constraint { lhs = lhs_arg; rhs = rhs_arg });
+            constrain (Constraint { lhs = lhs_res; rhs = rhs_res })
+        | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields } ->
+            List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
+                match
+                  List.Assoc.find lhs_fields rhs_field ~equal:Symbol.equal
+                with
+                | Some lhs_type ->
+                    constrain (Constraint { lhs = lhs_type; rhs = rhs_type })
+                | None -> raise (Missing_record_field { value = rhs_field }))
+        | Svar_type { state = lhs_state }, rhs ->
+            Variable.upper_bounds lhs_state
+            := rhs :: !(Variable.upper_bounds lhs_state);
+            List.iter
+              !(Variable.lower_bounds lhs_state)
+              ~f:(fun lhs -> constrain (Constraint { lhs; rhs }))
+        | lhs, Svar_type { state = rhs_state } ->
+            Variable.lower_bounds rhs_state
+            := lhs :: !(Variable.lower_bounds rhs_state);
+            List.iter
+              !(Variable.upper_bounds rhs_state)
+              ~f:(fun rhs -> constrain (Constraint { lhs; rhs }))
+        | lhs, rhs -> raise (Constrain_error { lhs; rhs }))
+      else ()
+
+    let f lhs rhs = constrain (Constraint { lhs; rhs })
+  end
+end
+
+module type MAPPER = sig
+  type self
+
+  val create : unit -> self
+  val visit : Syntax.t -> Tast.t Or_error.t
+  val visit_ast : self -> Syntax.t -> Tast.t
+  val visit_closure : self -> Syntax.Closure.t -> Closure.t
+  val visit_pattern : self -> Syntax.Pattern.t -> Pattern.t
+end
+
+module rec Make : functor (Fresh_var : FRESH_VAR) -> MAPPER =
+functor
+  (Fresh_var : FRESH_VAR)
+  ->
+  struct
+    module TypeScheme = Scheme (Fresh_var)
+
+    module Self = struct
+      type t =
+        | Self of {
+            self : (Symbol.t, TypeScheme.t, Symbol.comparator_witness) Map.t;
+            level : Level.t;
+          }
+
+      let create () =
+        Self { self = Map.empty (module Symbol); level = Level.default }
+
+      let contains (Self { self; _ }) v = Map.mem self v
+      let level (Self { level; _ }) = level
+
+      let level_up (Self { self; level }) =
+        Self { self; level = Level.level_up level }
+
+      let find (Self { self; _ }) v = Map.find_exn self v
+
+      let add (Self { self; level }) ~key ~data =
+        Self { self = Map.add_exn self ~key ~data; level }
+    end
+
+    type self = Self.t
+
+    let create () = Self.create ()
+
+    let rec visit_ast self =
+      let open Syntax in
       let open Tast.T in
       function
       | Uint { value; span } -> Tint { value; span }
@@ -212,12 +218,12 @@ module Make (Fresh_var : FRESH_VAR) = struct
           Trecord
             {
               fields =
-                List.map fields ~f:(fun (field, e) -> (field, visit self e));
+                List.map fields ~f:(fun (field, e) -> (field, visit_ast self e));
               span;
             }
       | Uselect { value; field; span } ->
           let res = Fresh_var.f (Self.level self) in
-          let value = visit self value in
+          let value = visit_ast self value in
           let module C = Constrain.Make () in
           C.f (Tast.T.type_of value)
             (SimpleType.Srecord { fields = [ (field, res) ] });
@@ -230,11 +236,11 @@ module Make (Fresh_var : FRESH_VAR) = struct
             app;
             span;
           } ->
-          let value = visit (Self.level_up self) value in
+          let value = visit_ast (Self.level_up self) value in
           let level = Self.level self in
           let type' = PolymorhicType.create level (Tast.T.type_of value) in
           let type' = TypeScheme.of_polymorphic_type type' in
-          let app = visit (Self.add self ~key:name ~data:type') app in
+          let app = visit_ast (Self.add self ~key:name ~data:type') app in
 
           Tlet
             {
@@ -250,7 +256,7 @@ module Make (Fresh_var : FRESH_VAR) = struct
               span;
             }
       | Ulet_fun { name; closure; app; span } ->
-          visit self
+          visit_ast self
             (Ulet
                {
                  pattern = Upat_var { value = name; span };
@@ -273,20 +279,20 @@ module Make (Fresh_var : FRESH_VAR) = struct
             Self.add self ~key:name
               ~data:(TypeScheme.of_polymorphic_type poly_type)
           in
-          let app = visit self app in
+          let app = visit_ast self app in
           Tdef { name; closure; app; span }
       | Uapp { fn; value; span } ->
           let res = Fresh_var.f (Self.level self) in
           let module C = Constrain.Make () in
-          let fn = visit self fn in
-          let arg = visit self value in
+          let fn = visit_ast self fn in
+          let arg = visit_ast self value in
           C.f (Tast.T.type_of fn)
             (SimpleType.Sfunction_type
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
 
     and visit_closure self
-        (Uclosure
+        (Syntax.Uclosure
           {
             parameter = Upat_var { value = name; span = pat_span };
             value;
@@ -297,31 +303,35 @@ module Make (Fresh_var : FRESH_VAR) = struct
       Tclosure
         {
           parameter = Tpat_var { value = name; span = pat_span; type' };
-          value = visit self value;
+          value = visit_ast self value;
           span;
         }
+
+    let visit_pattern _self _pattern = failwith "TODO"
+
+    let visit ast =
+      Or_error.try_with (fun () ->
+          let self = create () in
+          visit_ast self ast)
   end
 
-  let f t =
-    let open Type_term in
-    Or_error.try_with (fun () -> visit (create ()) t)
-end
-
 module Tests = struct
-  module T = Make (struct
-    let counter = ref 0
-
-    let f level =
-      let v = !counter in
-      counter := v + 1;
-      Variable.create level
-  end)
-
   let run_it s =
     match
       (let open Or_error.Let_syntax in
        let%bind ast = To_syntax.parse s in
-       let%bind t = T.f ast in
+       let (module Fresh_var) =
+         (module struct
+           let counter = ref 0
+
+           let f level =
+             let v = !counter in
+             counter := v + 1;
+             Variable.create level
+         end : FRESH_VAR)
+       in
+       let (module Visitor) = (module Make (Fresh_var) : MAPPER) in
+       let%bind t = Visitor.visit ast in
        t |> Tast.T.type_of |> SimpleType.sexp_of_t |> Sexp.to_string |> Ok)
       |> Or_error.ok_exn |> print_endline
     with

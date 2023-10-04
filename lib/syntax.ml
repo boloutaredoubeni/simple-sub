@@ -85,18 +85,6 @@ module Pattern = struct
   end
 end
 
-module type VISITOR = sig
-  type self
-  type ast
-  type closure
-  type pattern
-
-  val create : unit -> self
-  val visit : self -> t -> ast
-  val visit_closure : self -> Closure.t -> closure
-  val visit_pattern : self -> Pattern.t -> pattern
-end
-
 module Tests = struct
   let%test_unit "different ast" =
     let left = Uvar { value = Symbol.of_string "x"; span = Span.default } in
