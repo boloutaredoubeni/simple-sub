@@ -2,15 +2,20 @@ open Core
 open Text
 
 module Level = struct
-  type t = Level of { value : int } [@@deriving compare, sexp]
+  module T = struct
+    type t = Level of { value : int } [@@deriving compare, sexp]
 
-  let default = Level { value = 0 }
-  let create level = Level { value = level }
+    let default = Level { value = 0 }
+    let create level = Level { value = level }
 
-  let max (Level { value = left }) (Level { value = right }) =
-    Level { value = Int.max left right }
+    let max (Level { value = left }) (Level { value = right }) =
+      Level { value = Int.max left right }
 
-  let level_up (Level { value }) = Level { value = value + 1 }
+    let level_up (Level { value }) = Level { value = value + 1 }
+  end
+
+  include T
+  include Comparable.Make (T)
 end
 
 module rec SimpleType : sig
@@ -20,6 +25,8 @@ module rec SimpleType : sig
     | Sfunction_type of { argument : t; result : t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
+
+  val level : t -> Level.t
 end = struct
   type t =
     | Svar_type of { state : Variable.t }
@@ -27,6 +34,15 @@ end = struct
     | Sfunction_type of { argument : t; result : t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
+
+  let rec level = function
+    | Sfunction_type { argument; result } ->
+        Level.max (level argument) (level result)
+    | Svar_type { state = VariableState { level; _ } } -> level
+    | Sint_type -> Level.default
+    | Srecord { fields } ->
+        List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
+            Level.max acc (level t))
 end
 
 and Variable : sig
@@ -43,6 +59,7 @@ and Variable : sig
   val lower_bounds : t -> SimpleType.t list ref
   val upper_bounds : t -> SimpleType.t list ref
   val to_simple_type : t -> SimpleType.t
+  val of_simple_type : SimpleType.t -> t option
 
   type comparator_witness
 
@@ -60,6 +77,10 @@ end = struct
     [@@deriving compare, sexp]
 
     let to_simple_type state = Svar_type { state }
+
+    let of_simple_type = function
+      | Svar_type { state; _ } -> Some state
+      | _ -> None
 
     let create level =
       Svar_type

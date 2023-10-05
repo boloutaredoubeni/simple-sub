@@ -29,7 +29,7 @@ functor
     let of_simple_type t = Sch_simple t
     let of_polymorphic_type t = Sch_poly t
 
-    let rec instantiate t lvl =
+    let instantiate t lvl =
       let open SimpleType in
       let open PolymorhicType in
       match t with
@@ -47,7 +47,7 @@ functor
             in
 
             let rec freshen ty =
-              let type_level = level (of_simple_type ty) in
+              let type_level = SimpleType.level ty in
               if Level.compare type_level limit < 1 then ty
               else
                 match ty with
@@ -88,17 +88,135 @@ functor
           freshen_above limit body lvl
 
     and level = function
-      | Sch_simple (Sfunction_type { argument; result }) ->
-          Level.max
-            (level (of_simple_type argument))
-            (level (of_simple_type result))
-      | Sch_simple (Svar_type { state = VariableState { level; _ } }) -> level
-      | Sch_simple Sint_type -> Level.default
-      | Sch_simple (Srecord { fields }) ->
-          List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
-              Level.max acc (level (of_simple_type t)))
+      | Sch_simple t -> SimpleType.level t
       | Sch_poly (PolymorhicType { level; _ }) -> level
   end
+
+module Polar = struct
+  type polarity = Use | Value [@@deriving sexp, compare]
+
+  let not = function Use -> Value | Value -> Use
+  let bool = function Use -> true | Value -> false
+  let of_bool = function true -> Use | false -> Value
+
+  module Type = struct
+    module T = struct
+      type t = PolarType of { type' : SimpleType.t; polar : polarity }
+      [@@deriving sexp, compare]
+
+      let create type' polar = PolarType { type'; polar }
+    end
+
+    include T
+    include Comparable.Make (T)
+
+    let level (PolarType { type'; _ }) = SimpleType.level type'
+
+    let not (PolarType { type'; polar }) =
+      PolarType { type'; polar = not polar }
+
+    let bool (PolarType { polar; _ }) = bool polar
+    let polarity (PolarType { polar; _ }) = polar
+    let type_of (PolarType { type'; _ }) = type'
+  end
+
+  module Variable = struct
+    module T = struct
+      type t = PolarVariable of { state : Variable.t; polar : polarity }
+      [@@deriving sexp, compare]
+
+      let create state polar = PolarVariable { state; polar }
+    end
+
+    include T
+    include Comparable.Make (T)
+
+    let level (PolarVariable { state; _ }) = Variable.level state
+
+    let not (PolarVariable { state; polar }) =
+      PolarVariable { state; polar = not polar }
+
+    let bool (PolarVariable { polar; _ }) = bool polar
+    let polarity (PolarVariable { polar; _ }) = polar
+  end
+end
+
+module Extrude = struct
+  module type T = sig
+    val f : Polar.Type.t -> SimpleType.t
+  end
+
+  module Self = struct
+    type t = Self of { level : Level.t }
+
+    let create level = Self { level }
+    let level (Self { level; _ }) = level
+  end
+
+  module Make (S : sig
+    val level : Level.t
+  end) : T = struct
+    let c =
+      object
+        val mutable map = Map.empty (module Polar.Variable)
+        method add ~key ~data = map <- Map.add_exn map ~key ~data
+
+        method find_or_else key ~else' =
+          match Map.find map key with Some v -> v | None -> else' ()
+      end
+
+    let rec extrude self t =
+      let open Level in
+      if Polar.Type.level t <= Self.level self then Polar.Type.type_of t
+      else
+        let open SimpleType in
+        let polarity = Polar.Type.polarity t in
+        let create_type t = Polar.Type.create t polarity in
+        match Polar.Type.type_of t with
+        | Sint_type -> Sint_type
+        | Sfunction_type { argument; result } ->
+            Sfunction_type
+              {
+                argument =
+                  extrude self (Polar.Type.create argument (Polar.not polarity));
+                result = extrude self (create_type result);
+              }
+        | Srecord { fields } ->
+            Srecord
+              {
+                fields =
+                  List.map fields ~f:(fun (f, t) ->
+                      (f, extrude self (create_type t)));
+              }
+        | Svar_type { state } ->
+            let polar = Polar.Variable.create state polarity in
+            c#find_or_else polar ~else':(fun () ->
+                let nvs = Variable.create (Self.level self) in
+                let nvs_state =
+                  nvs |> Variable.of_simple_type |> Option.value_exn
+                in
+                c#add ~key:polar ~data:(Svar_type { state = nvs_state });
+                (if Polar.bool polarity then (
+                   let upper_bounds = Variable.upper_bounds state in
+                   upper_bounds :=
+                     Svar_type { state = nvs_state } :: !upper_bounds;
+                   let lower_bounds = Variable.lower_bounds nvs_state in
+                   Variable.lower_bounds nvs_state
+                   := List.map !lower_bounds ~f:(fun ty ->
+                          extrude self (Polar.Type.create ty polarity)))
+                 else
+                   let lower_bounds = Variable.lower_bounds state in
+                   lower_bounds :=
+                     Svar_type { state = nvs_state } :: !lower_bounds;
+                   let upper_bounds = Variable.upper_bounds nvs_state in
+                   Variable.upper_bounds nvs_state
+                   := List.map !upper_bounds ~f:(fun ty ->
+                          extrude self (Polar.Type.create ty polarity)));
+                nvs)
+
+    let f t = extrude (Self.create S.level) t
+  end
+end
 
 module Constrain = struct
   module type T = sig
@@ -123,11 +241,21 @@ module Constrain = struct
         method add c = cache <- Set.add cache c
       end
 
-    open Constraint
+    let extrude type' polarity level =
+      let module E = Extrude.Make (struct
+        let level = level
+      end) in
+      let polar_type = Polar.Type.create type' polarity in
+      E.f polar_type
 
-    let rec constrain (Constraint { lhs; rhs } as c) =
+    let rec f lhs rhs =
+      let open Constraint in
+      constrain (Constraint { lhs; rhs })
+
+    and constrain (Constraint.Constraint { lhs; rhs } as c) =
       if not (cache#contains c) then (
         cache#add c;
+        let open Level in
         match (lhs, rhs) with
         | Sint_type, Sint_type -> ()
         | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
@@ -142,22 +270,30 @@ module Constrain = struct
                 | Some lhs_type ->
                     constrain (Constraint { lhs = lhs_type; rhs = rhs_type })
                 | None -> raise (Missing_record_field { value = rhs_field }))
-        | Svar_type { state = lhs_state }, rhs ->
+        | Svar_type { state = lhs_state }, rhs
+          when SimpleType.level rhs <= Variable.level lhs_state ->
             Variable.upper_bounds lhs_state
             := rhs :: !(Variable.upper_bounds lhs_state);
             List.iter
               !(Variable.lower_bounds lhs_state)
               ~f:(fun lhs -> constrain (Constraint { lhs; rhs }))
-        | lhs, Svar_type { state = rhs_state } ->
+        | lhs, Svar_type { state = rhs_state }
+          when SimpleType.level lhs <= Variable.level rhs_state ->
             Variable.lower_bounds rhs_state
             := lhs :: !(Variable.lower_bounds rhs_state);
             List.iter
               !(Variable.upper_bounds rhs_state)
               ~f:(fun rhs -> constrain (Constraint { lhs; rhs }))
+        | (Svar_type { state = lhs_state } as lhs), rhs ->
+            let level = Variable.level lhs_state in
+            let rhs = extrude rhs (Polar.of_bool false) level in
+            constrain (Constraint { lhs; rhs })
+        | lhs, (Svar_type { state = rhs_state } as rhs) ->
+            let level = Variable.level rhs_state in
+            let lhs = extrude lhs (Polar.of_bool true) level in
+            constrain (Constraint { lhs; rhs })
         | lhs, rhs -> raise (Constrain_error { lhs; rhs }))
       else ()
-
-    let f lhs rhs = constrain (Constraint { lhs; rhs })
   end
 end
 
@@ -204,6 +340,10 @@ functor
 
     let create () = Self.create ()
 
+    let constrain lhs rhs =
+      let module C = Constrain.Make () in
+      C.f lhs rhs
+
     let rec visit_ast self =
       let open Syntax in
       let open Tast.T in
@@ -224,8 +364,7 @@ functor
       | Uselect { value; field; span } ->
           let res = Fresh_var.f (Self.level self) in
           let value = visit_ast self value in
-          let module C = Constrain.Make () in
-          C.f (Tast.T.type_of value)
+          constrain (Tast.T.type_of value)
             (SimpleType.Srecord { fields = [ (field, res) ] });
           Tselect { value; field; span; type' = res }
       | Ulambda { closure } -> Tlambda { closure = visit_closure self closure }
@@ -272,8 +411,7 @@ functor
             let self = Self.level_up self in
             visit_closure self closure
           in
-          let module C = Constrain.Make () in
-          C.f (Tast.Closure.type_of closure) expr;
+          constrain (Tast.Closure.type_of closure) expr;
           let self =
             let poly_type = PolymorhicType.create (Self.level self) expr in
             Self.add self ~key:name
@@ -283,10 +421,9 @@ functor
           Tdef { name; closure; app; span }
       | Uapp { fn; value; span } ->
           let res = Fresh_var.f (Self.level self) in
-          let module C = Constrain.Make () in
           let fn = visit_ast self fn in
           let arg = visit_ast self value in
-          C.f (Tast.T.type_of fn)
+          constrain (Tast.T.type_of fn)
             (SimpleType.Sfunction_type
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
