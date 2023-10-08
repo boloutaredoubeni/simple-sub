@@ -30,16 +30,22 @@ module Make (S : S) : T = struct
         let print_ast = flag "-dump-ast" no_arg ~doc:"FILE dump ast to file"
         (* TODO: make type simplification 'optional' *)
         and print_tast = flag "-dump-tast" no_arg ~doc:"FILE infer type of file"
+        and print_lambda =
+          flag "-dump-lambda" no_arg ~doc:"FILE dump lambda to file"
         and filename =
           (* FIXME: '-' is not a real file, should drop into 'repl' mode *)
           anon (maybe_with_default "-" ("filename" %: Filename_unix.arg_type))
         in
         let (module Cli_runner) =
+          let (module Fresh_sym) = Text.create_fresh_sym () in
           make_runner
             (module struct
               let print_ast = print_ast
               let print_tast = print_tast
               let filename = filename
+              let print_lambda = print_lambda
+
+              module Fresh_sym = Fresh_sym
             end)
         in
         Cli_runner.run]
@@ -100,6 +106,7 @@ module Tests : sig end = struct
     === flags ===
 
       [-dump-ast]                . FILE dump ast to file
+      [-dump-lambda]             . FILE dump lambda to file
       [-dump-tast]               . FILE infer type of file
       [-build-info]              . print info about this build and exit
       [-version]                 . print the version of this build and exit
@@ -172,4 +179,13 @@ module Tests : sig end = struct
         run_it "printer tast" [ "-dump-tast"; file ]);
     [%expect
       {| (Tint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
+
+  let%expect_test "print lambda" =
+    let module Temp = MakeFxTemp (struct
+      let prefix = "print"
+    end) in
+    Temp.with_file "42" (fun file ->
+        run_it "printer tast" [ "-dump-lambda"; file ]);
+    [%expect
+      {| (Lint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 end

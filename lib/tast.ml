@@ -48,13 +48,15 @@ end
 and Variable : sig
   type t =
     | VariableState of {
+        name : Symbol.t;
         level : Level.t;
         lower_bounds : SimpleType.t list ref;
         upper_bounds : SimpleType.t list ref;
       }
   [@@deriving compare, sexp]
 
-  val create : Level.t -> SimpleType.t
+  val create : level:Level.t -> fresher:(module FRESH_SYM) -> SimpleType.t
+  val name : t -> Symbol.t
   val level : t -> Level.t
   val lower_bounds : t -> SimpleType.t list ref
   val upper_bounds : t -> SimpleType.t list ref
@@ -70,24 +72,32 @@ end = struct
 
     type t =
       | VariableState of {
+          name : Symbol.t;
           level : Level.t;
           lower_bounds : SimpleType.t list ref;
           upper_bounds : SimpleType.t list ref;
         }
     [@@deriving compare, sexp]
 
+    let name = function VariableState { name; _ } -> name
     let to_simple_type state = Svar_type { state }
 
     let of_simple_type = function
       | Svar_type { state; _ } -> Some state
       | _ -> None
 
-    let create level =
+    let create ~level ~fresher =
+      let (module Fresh_sym : FRESH_SYM) = fresher in
       Svar_type
         {
           state =
             VariableState
-              { level; lower_bounds = ref []; upper_bounds = ref [] };
+              {
+                level;
+                lower_bounds = ref [];
+                upper_bounds = ref [];
+                name = Fresh_sym.f ();
+              };
         }
 
     let level = function VariableState { level; _ } -> level
@@ -108,6 +118,55 @@ module PolymorhicType = struct
   [@@deriving compare, sexp]
 
   let create level body = PolymorhicType { level; body }
+end
+
+module Polar = struct
+  type polarity = Positive | Negative [@@deriving sexp, compare]
+
+  let not = function Positive -> Negative | Negative -> Positive
+  let bool = function Positive -> true | Negative -> false
+  let of_bool = function true -> Positive | false -> Negative
+
+  module Type = struct
+    module T = struct
+      type t = PolarType of { type' : SimpleType.t; polar : polarity }
+      [@@deriving sexp, compare]
+
+      let create type' polar = PolarType { type'; polar }
+    end
+
+    include T
+    include Comparable.Make (T)
+
+    let level (PolarType { type'; _ }) = SimpleType.level type'
+
+    let not (PolarType { type'; polar }) =
+      PolarType { type'; polar = not polar }
+
+    let bool (PolarType { polar; _ }) = bool polar
+    let polarity (PolarType { polar; _ }) = polar
+    let type_of (PolarType { type'; _ }) = type'
+  end
+
+  module Variable = struct
+    module T = struct
+      type t = PolarVariable of { state : Variable.t; polar : polarity }
+      [@@deriving sexp, compare]
+
+      let create state polar = PolarVariable { state; polar }
+    end
+
+    include T
+    include Comparable.Make (T)
+
+    let level (PolarVariable { state; _ }) = Variable.level state
+
+    let not (PolarVariable { state; polar }) =
+      PolarVariable { state; polar = not polar }
+
+    let bool (PolarVariable { polar; _ }) = bool polar
+    let polarity (PolarVariable { polar; _ }) = polar
+  end
 end
 
 module rec T : sig
@@ -143,6 +202,7 @@ module rec T : sig
     | Tlambda of { closure : Closure.t }
     | Tdef of {
         name : Symbol.t;
+        fn_type : SimpleType.t;
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);
@@ -183,6 +243,7 @@ end = struct
     | Tlambda of { closure : Closure.t }
     | Tdef of {
         name : Symbol.t;
+        fn_type : SimpleType.t;
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);

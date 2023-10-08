@@ -70,11 +70,25 @@ end
 
 module Symbol = struct
   module T = struct
-    type t = Symbol of string [@@deriving compare, sexp]
+    type t = Symbol of string [@@deriving compare, sexp, equal]
 
     let of_string s = Symbol s
+    let to_string (Symbol s) = s
   end
 
   include T
   include Comparable.Make (T)
 end
+
+module type FRESH_SYM = sig
+  val f : unit -> Symbol.t
+end
+
+let create_fresh_sym () =
+  let counter = ref 0 in
+  (module struct
+    let f () =
+      let sym = Symbol.of_string (Printf.sprintf "__%d" !counter) in
+      counter := !counter + 1;
+      sym
+  end : FRESH_SYM)

@@ -10,6 +10,17 @@ module type FRESH_VAR = sig
   val f : Level.t -> SimpleType.t
 end
 
+let create_fresh_vars ~fresher =
+  let counter = ref 0 in
+  let f level =
+    let v = !counter in
+    counter := v + 1;
+    Variable.create ~level ~fresher
+  in
+  (module struct
+    let f = f
+  end : FRESH_VAR)
+
 module type SCHEME = sig
   type t = private Sch_simple of SimpleType.t | Sch_poly of PolymorhicType.t
 
@@ -92,55 +103,6 @@ functor
       | Sch_poly (PolymorhicType { level; _ }) -> level
   end
 
-module Polar = struct
-  type polarity = Use | Value [@@deriving sexp, compare]
-
-  let not = function Use -> Value | Value -> Use
-  let bool = function Use -> true | Value -> false
-  let of_bool = function true -> Use | false -> Value
-
-  module Type = struct
-    module T = struct
-      type t = PolarType of { type' : SimpleType.t; polar : polarity }
-      [@@deriving sexp, compare]
-
-      let create type' polar = PolarType { type'; polar }
-    end
-
-    include T
-    include Comparable.Make (T)
-
-    let level (PolarType { type'; _ }) = SimpleType.level type'
-
-    let not (PolarType { type'; polar }) =
-      PolarType { type'; polar = not polar }
-
-    let bool (PolarType { polar; _ }) = bool polar
-    let polarity (PolarType { polar; _ }) = polar
-    let type_of (PolarType { type'; _ }) = type'
-  end
-
-  module Variable = struct
-    module T = struct
-      type t = PolarVariable of { state : Variable.t; polar : polarity }
-      [@@deriving sexp, compare]
-
-      let create state polar = PolarVariable { state; polar }
-    end
-
-    include T
-    include Comparable.Make (T)
-
-    let level (PolarVariable { state; _ }) = Variable.level state
-
-    let not (PolarVariable { state; polar }) =
-      PolarVariable { state; polar = not polar }
-
-    let bool (PolarVariable { polar; _ }) = bool polar
-    let polarity (PolarVariable { polar; _ }) = polar
-  end
-end
-
 module Extrude = struct
   module type T = sig
     val f : Polar.Type.t -> SimpleType.t
@@ -154,6 +116,8 @@ module Extrude = struct
   end
 
   module Make (S : sig
+    module Fresh_sym : FRESH_SYM
+
     val level : Level.t
   end) : T = struct
     let c =
@@ -191,7 +155,10 @@ module Extrude = struct
         | Svar_type { state } ->
             let polar = Polar.Variable.create state polarity in
             c#find_or_else polar ~else':(fun () ->
-                let nvs = Variable.create (Self.level self) in
+                let nvs =
+                  Variable.create ~level:(Self.level self)
+                    ~fresher:(module S.Fresh_sym)
+                in
                 let nvs_state =
                   nvs |> Variable.of_simple_type |> Option.value_exn
                 in
@@ -223,7 +190,7 @@ module Constrain = struct
     val f : SimpleType.t -> SimpleType.t -> unit
   end
 
-  module Make () : T = struct
+  module Make (Fresh_sym : FRESH_SYM) : T = struct
     module Constraint = struct
       module T = struct
         type t = Constraint of { lhs : SimpleType.t; rhs : SimpleType.t }
@@ -244,6 +211,8 @@ module Constrain = struct
     let extrude type' polarity level =
       let module E = Extrude.Make (struct
         let level = level
+
+        module Fresh_sym = Fresh_sym
       end) in
       let polar_type = Polar.Type.create type' polarity in
       E.f polar_type
@@ -301,18 +270,23 @@ module type MAPPER = sig
   type self
 
   val create : unit -> self
-  val visit : Syntax.t -> Tast.t Or_error.t
-  val visit_ast : self -> Syntax.t -> Tast.t
-  val visit_closure : self -> Syntax.Closure.t -> Closure.t
-  val visit_pattern : self -> Syntax.Pattern.t -> Pattern.t
+  val map : Syntax.t -> Tast.t Or_error.t
+  val map_ast : self -> Syntax.t -> Tast.t
+  val map_closure : self -> Syntax.Closure.t -> Closure.t
+  val map_pattern : self -> Syntax.Pattern.t -> Pattern.t
 end
 
-module rec Make : functor (Fresh_var : FRESH_VAR) -> MAPPER =
+module type S = sig
+  module Fresh_var : FRESH_VAR
+  module Fresh_sym : FRESH_SYM
+end
+
+module rec Make : functor (S : S) -> MAPPER =
 functor
-  (Fresh_var : FRESH_VAR)
+  (S : S)
   ->
   struct
-    module TypeScheme = Scheme (Fresh_var)
+    module TypeScheme = Scheme (S.Fresh_var)
 
     module Self = struct
       type t =
@@ -341,10 +315,10 @@ functor
     let create () = Self.create ()
 
     let constrain lhs rhs =
-      let module C = Constrain.Make () in
+      let module C = Constrain.Make (S.Fresh_sym) in
       C.f lhs rhs
 
-    let rec visit_ast self =
+    let rec map_ast self =
       let open Syntax in
       let open Tast.T in
       function
@@ -358,16 +332,16 @@ functor
           Trecord
             {
               fields =
-                List.map fields ~f:(fun (field, e) -> (field, visit_ast self e));
+                List.map fields ~f:(fun (field, e) -> (field, map_ast self e));
               span;
             }
       | Uselect { value; field; span } ->
-          let res = Fresh_var.f (Self.level self) in
-          let value = visit_ast self value in
+          let res = S.Fresh_var.f (Self.level self) in
+          let value = map_ast self value in
           constrain (Tast.T.type_of value)
             (SimpleType.Srecord { fields = [ (field, res) ] });
           Tselect { value; field; span; type' = res }
-      | Ulambda { closure } -> Tlambda { closure = visit_closure self closure }
+      | Ulambda { closure } -> Tlambda { closure = map_closure self closure }
       | Ulet
           {
             pattern = Upat_var { value = name; span = pat_span };
@@ -375,11 +349,11 @@ functor
             app;
             span;
           } ->
-          let value = visit_ast (Self.level_up self) value in
+          let value = map_ast (Self.level_up self) value in
           let level = Self.level self in
           let type' = PolymorhicType.create level (Tast.T.type_of value) in
           let type' = TypeScheme.of_polymorphic_type type' in
-          let app = visit_ast (Self.add self ~key:name ~data:type') app in
+          let app = map_ast (Self.add self ~key:name ~data:type') app in
 
           Tlet
             {
@@ -395,7 +369,7 @@ functor
               span;
             }
       | Ulet_fun { name; closure; app; span } ->
-          visit_ast self
+          map_ast self
             (Ulet
                {
                  pattern = Upat_var { value = name; span };
@@ -404,12 +378,12 @@ functor
                  span;
                })
       | Udef { name; closure; app; span } ->
-          let expr = Fresh_var.f (Level.level_up (Self.level self)) in
+          let expr = S.Fresh_var.f (Level.level_up (Self.level self)) in
           let closure =
             let type' = TypeScheme.of_simple_type expr in
             let self = Self.add self ~key:name ~data:type' in
             let self = Self.level_up self in
-            visit_closure self closure
+            map_closure self closure
           in
           constrain (Tast.Closure.type_of closure) expr;
           let self =
@@ -417,39 +391,43 @@ functor
             Self.add self ~key:name
               ~data:(TypeScheme.of_polymorphic_type poly_type)
           in
-          let app = visit_ast self app in
-          Tdef { name; closure; app; span }
+          let app = map_ast self app in
+          let fn_type =
+            TypeScheme.instantiate (Self.find self name) (Self.level self)
+          in
+          Tdef { name; closure; app; span; fn_type }
       | Uapp { fn; value; span } ->
-          let res = Fresh_var.f (Self.level self) in
-          let fn = visit_ast self fn in
-          let arg = visit_ast self value in
+          let res = S.Fresh_var.f (Self.level self) in
+          let fn = map_ast self fn in
+          let arg = map_ast self value in
           constrain (Tast.T.type_of fn)
             (SimpleType.Sfunction_type
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
 
-    and visit_closure self
+    and map_closure self
         (Syntax.Uclosure
           {
             parameter = Upat_var { value = name; span = pat_span };
             value;
             span;
           }) =
-      let type' = Fresh_var.f (Self.level self) in
+      let type' = S.Fresh_var.f (Self.level self) in
 
       Tclosure
         {
           parameter = Tpat_var { value = name; span = pat_span; type' };
-          value = visit_ast self value;
+          value = map_ast self value;
           span;
         }
 
-    let visit_pattern _self _pattern = failwith "TODO"
+    let map_pattern : self -> Syntax.Pattern.t -> Pattern.t =
+     fun _ _ -> failwith "TODO"
 
-    let visit ast =
+    let map ast =
       Or_error.try_with (fun () ->
           let self = create () in
-          visit_ast self ast)
+          map_ast self ast)
   end
 
 module Tests = struct
@@ -457,6 +435,7 @@ module Tests = struct
     match
       (let open Or_error.Let_syntax in
        let%bind ast = To_syntax.parse s in
+       let (module Fresh_sym) = Text.create_fresh_sym () in
        let (module Fresh_var) =
          (module struct
            let counter = ref 0
@@ -464,11 +443,17 @@ module Tests = struct
            let f level =
              let v = !counter in
              counter := v + 1;
-             Variable.create level
+             Variable.create ~level ~fresher:(module Fresh_sym)
          end : FRESH_VAR)
        in
-       let (module Visitor) = (module Make (Fresh_var) : MAPPER) in
-       let%bind t = Visitor.visit ast in
+       let (module S) =
+         (module struct
+           module Fresh_sym = Fresh_sym
+           module Fresh_var = Fresh_var
+         end : S)
+       in
+       let (module Visitor) = (module Make (S) : MAPPER) in
+       let%bind t = Visitor.map ast in
        t |> Tast.T.type_of |> SimpleType.sexp_of_t |> Sexp.to_string |> Ok)
       |> Or_error.ok_exn |> print_endline
     with
@@ -495,12 +480,12 @@ module Tests = struct
   let%expect_test "field access" =
     run_it {| { a=0, b=1}.a |};
     [%expect
-      {| (Svar_type(state(VariableState(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
 
   let%expect_test "type lambda" =
     run_it {| fn x -> 10 |};
     [%expect
-      {| (Sfunction_type(argument(Svar_type(state(VariableState(level(Level(value 0)))(lower_bounds())(upper_bounds())))))(result Sint_type)) |}]
+      {| (Sfunction_type(argument(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds())))))(result Sint_type)) |}]
 
   let%expect_test "type let" =
     run_it {| let x = 0 in x|};
@@ -509,12 +494,12 @@ module Tests = struct
   let%expect_test "type let function" =
     run_it {| let f x -> 0 in f |};
     [%expect
-      {| (Sfunction_type(argument(Svar_type(state(VariableState(level(Level(value 0)))(lower_bounds())(upper_bounds())))))(result Sint_type)) |}]
+      {| (Sfunction_type(argument(Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds())(upper_bounds())))))(result Sint_type)) |}]
 
   let%expect_test "type app" =
     run_it {| let f x -> 0 in f 2 |};
     [%expect
-      {| (Svar_type(state(VariableState(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
 
   let%expect_test "type def function" =
     run_it {|
@@ -522,5 +507,5 @@ module Tests = struct
       f
     |};
     [%expect
-      {| (Svar_type(state(VariableState(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __3))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
 end
