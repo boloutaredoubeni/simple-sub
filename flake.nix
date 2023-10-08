@@ -83,7 +83,7 @@
 
           fx-deps = with ocamlPackages; [
             menhir
-            wasm
+
             core
             base
             stdio
