@@ -44,8 +44,8 @@ module Make (S : S) : T = struct
     end) in
     let%bind tast = Typing.map ast in
     if S.print_tast then print_endline (Sexp.to_string (Tast.sexp_of_t tast));
-    let module Coalesce = Coalesce.Make (S.Fresh_sym) in
-    let%bind lambda = Coalesce.map tast in
+    let module To_lambda = To_lambda.Make (S.Fresh_sym) in
+    let%bind lambda = To_lambda.map tast in
     if S.print_lambda then
       print_endline (Sexp.to_string (Lambda.sexp_of_t lambda));
     Ok ()

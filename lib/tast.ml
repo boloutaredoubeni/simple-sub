@@ -22,7 +22,11 @@ module rec SimpleType : sig
   type t =
     | Svar_type of { state : Variable.t }
     | Sint_type
+    | Sfloat_type
+    | Sbool_type
     | Sfunction_type of { argument : t; result : t }
+    | Sunit_type
+    | Stuple_type of { first : t; second : t; rest : t list }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -31,7 +35,11 @@ end = struct
   type t =
     | Svar_type of { state : Variable.t }
     | Sint_type
+    | Sfloat_type
+    | Sbool_type
     | Sfunction_type of { argument : t; result : t }
+    | Sunit_type
+    | Stuple_type of { first : t; second : t; rest : t list }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -39,7 +47,10 @@ end = struct
     | Sfunction_type { argument; result } ->
         Level.max (level argument) (level result)
     | Svar_type { state = VariableState { level; _ } } -> level
-    | Sint_type -> Level.default
+    | Sint_type | Sbool_type | Sfloat_type | Sunit_type -> Level.default
+    | Stuple_type { first; second; rest } ->
+        List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
+            Level.max acc (level t))
     | Srecord { fields } ->
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
@@ -169,17 +180,67 @@ module Polar = struct
   end
 end
 
+module Primop = struct
+  type t =
+    | Tint_add
+    | Tint_sub
+    | Tint_mul
+    | Tint_div
+    | Tint_eq
+    | Tint_lt
+    | Tint_gt
+    | Tint_le
+    | Tint_ge
+    | Tint_ne
+    | Tint_neg
+    | Tfloat_add
+    | Tfloat_sub
+    | Tfloat_mul
+    | Tfloat_div
+    | Tfloat_eq
+    | Tfloat_lt
+    | Tfloat_gt
+    | Tfloat_le
+    | Tfloat_ge
+    | Tfloat_ne
+    | Tfloat_neg
+    | Tbool_eq
+    | Tbool_ne
+  [@@deriving sexp, compare]
+end
+
 module rec T : sig
   type t =
     | Tint of { value : int; span : (Span.span[@compare.ignore]) }
+    | Tfloat of { value : float; span : (Span.span[@compare.ignore]) }
+    | Tbool of { value : bool; span : (Span.span[@compare.ignore]) }
     | Tvar of {
         value : Symbol.t;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
+    | Tprimop of {
+        op : Primop.t;
+        args : t list;
         span : (Span.span[@compare.ignore]);
         type' : SimpleType.t;
       }
     | Tapp of {
         fn : t;
         value : t;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
+    | Tunit of { span : (Span.span[@compare.ignore]) }
+    | Ttuple of {
+        first : t;
+        second : t;
+        rest : t list;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tsubscript of {
+        value : t;
+        index : t;
         span : (Span.span[@compare.ignore]);
         type' : SimpleType.t;
       }
@@ -206,6 +267,13 @@ module rec T : sig
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);
+      }
+    | Tif of {
+        cond : t;
+        then_ : t;
+        else_ : t;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
       }
   [@@deriving compare, sexp]
 
@@ -213,14 +281,35 @@ module rec T : sig
 end = struct
   type t =
     | Tint of { value : int; span : (Span.span[@compare.ignore]) }
+    | Tfloat of { value : float; span : (Span.span[@compare.ignore]) }
+    | Tbool of { value : bool; span : (Span.span[@compare.ignore]) }
     | Tvar of {
         value : Symbol.t;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
+    | Tprimop of {
+        op : Primop.t;
+        args : t list;
         span : (Span.span[@compare.ignore]);
         type' : SimpleType.t;
       }
     | Tapp of {
         fn : t;
         value : t;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
+    | Tunit of { span : (Span.span[@compare.ignore]) }
+    | Ttuple of {
+        first : t;
+        second : t;
+        rest : t list;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tsubscript of {
+        value : t;
+        index : t;
         span : (Span.span[@compare.ignore]);
         type' : SimpleType.t;
       }
@@ -248,11 +337,29 @@ end = struct
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tif of {
+        cond : t;
+        then_ : t;
+        else_ : t;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
   [@@deriving compare, sexp]
 
   let rec type_of = function
     | Tint _ -> SimpleType.Sint_type
+    | Tfloat _ -> SimpleType.Sfloat_type
+    | Tbool _ -> SimpleType.Sbool_type
     | Tvar { type'; _ } -> type'
+    | Tunit _ -> SimpleType.Sunit_type
+    | Ttuple { first; second; rest; _ } ->
+        SimpleType.Stuple_type
+          {
+            first = type_of first;
+            second = type_of second;
+            rest = List.map rest ~f:type_of;
+          }
+    | Tsubscript { type'; _ } -> type'
     | Trecord { fields; _ } ->
         SimpleType.Srecord
           { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
@@ -261,19 +368,28 @@ end = struct
     | Tselect { type'; _ } -> type'
     | Tapp { type'; _ } -> type'
     | Tdef { app; _ } -> type_of app
+    | Tprimop { type'; _ } -> type'
+    | Tif { type'; _ } -> type'
 
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
 
     let span = function
       | Tint { span; _ } -> span
+      | Tbool { span; _ } -> span
+      | Tfloat { span; _ } -> span
       | Tvar { span; _ } -> span
       | Tapp { span; _ } -> span
+      | Tunit { span; _ } -> span
+      | Ttuple { span; _ } -> span
+      | Tsubscript { span; _ } -> span
       | Trecord { span; _ } -> span
       | Tselect { span; _ } -> span
       | Tlet { span; _ } -> span
       | Tlambda { closure = Tclosure { span; _ } } -> span
       | Tdef { span; _ } -> span
+      | Tprimop { span; _ } -> span
+      | Tif { span; _ } -> span
   end
 end
 

@@ -86,6 +86,13 @@ functor
                 | Sfunction_type { argument; result } ->
                     Sfunction_type
                       { argument = freshen argument; result = freshen result }
+                | Stuple_type { first; second; rest } ->
+                    Stuple_type
+                      {
+                        first = freshen first;
+                        second = freshen second;
+                        rest = List.map rest ~f:freshen;
+                      }
                 | Srecord { fields } ->
                     Srecord
                       {
@@ -93,6 +100,9 @@ functor
                           List.map fields ~f:(fun (f, t) -> (f, freshen t));
                       }
                 | Sint_type -> Sint_type
+                | Sbool_type -> Sbool_type
+                | Sfloat_type -> Sfloat_type
+                | Sunit_type -> Sunit_type
             in
             freshen ty
           in
@@ -138,12 +148,22 @@ module Extrude = struct
         let create_type t = Polar.Type.create t polarity in
         match Polar.Type.type_of t with
         | Sint_type -> Sint_type
+        | Sfloat_type -> Sfloat_type
+        | Sbool_type -> Sbool_type
+        | Sunit_type -> Sunit_type
         | Sfunction_type { argument; result } ->
             Sfunction_type
               {
                 argument =
                   extrude self (Polar.Type.create argument (Polar.not polarity));
                 result = extrude self (create_type result);
+              }
+        | Stuple_type { first; second; rest } ->
+            Stuple_type
+              {
+                first = extrude self (create_type first);
+                second = extrude self (create_type second);
+                rest = List.map rest ~f:(fun t -> extrude self (create_type t));
               }
         | Srecord { fields } ->
             Srecord
@@ -227,10 +247,20 @@ module Constrain = struct
         let open Level in
         match (lhs, rhs) with
         | Sint_type, Sint_type -> ()
+        | Sfloat_type, Sfloat_type -> ()
+        | Sbool_type, Sbool_type -> ()
         | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
             Sfunction_type { argument = rhs_arg; result = rhs_res } ) ->
             constrain (Constraint { lhs = lhs_arg; rhs = rhs_arg });
             constrain (Constraint { lhs = lhs_res; rhs = rhs_res })
+        | ( Stuple_type
+              { first = lhs_first; second = lhs_second; rest = lhs_rest },
+            Stuple_type
+              { first = rhs_first; second = rhs_second; rest = rhs_rest } ) ->
+            constrain (Constraint { lhs = lhs_first; rhs = rhs_first });
+            constrain (Constraint { lhs = lhs_second; rhs = rhs_second });
+            List.iter2_exn lhs_rest rhs_rest ~f:(fun lhs rhs ->
+                constrain (Constraint { lhs; rhs }))
         | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields } ->
             List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
                 match
@@ -321,13 +351,89 @@ functor
     let rec map_ast self =
       let open Syntax in
       let open Tast.T in
+      let open Op in
       function
       | Uint { value; span } -> Tint { value; span }
+      | Ufloat { value; span } -> Tfloat { value; span }
+      | Ubool { value; span } -> Tbool { value; span }
+      | Uneg { value; span } ->
+          let value = map_ast self value in
+          constrain (Tast.T.type_of value) Sint_type;
+          Tprimop { op = Tint_neg; args = [ value ]; span; type' = Sint_type }
+      | Uop { op = (Add | Sub | Mul | Div) as int_op; left; right; span } ->
+          let left = map_ast self left in
+          let right = map_ast self right in
+
+          constrain (Tast.T.type_of left) (Tast.T.type_of right);
+          let op =
+            let open Primop in
+            let lhs = Tast.T.type_of left in
+            let rhs = Tast.T.type_of right in
+            match (int_op, lhs, rhs) with
+            | Add, Sint_type, Sint_type -> Tint_add
+            | Sub, Sint_type, Sint_type -> Tint_sub
+            | Mul, Sint_type, Sint_type -> Tint_mul
+            | Div, Sint_type, Sint_type -> Tint_div
+            | Add, Sfloat_type, Sfloat_type -> Tfloat_add
+            | Sub, Sfloat_type, Sfloat_type -> Tfloat_sub
+            | Mul, Sfloat_type, Sfloat_type -> Tfloat_mul
+            | Div, Sfloat_type, Sfloat_type -> Tfloat_div
+            | _ -> assert false
+          in
+          Tprimop { op; args = [ left; right ]; span; type' = Sint_type }
+      (* NOTE: not eq and cmp are different concepts *)
+      | Uop
+          { op = (Eq | Neq | Geq | Leq | Lt | Gt) as relop; left; right; span }
+        ->
+          let left = map_ast self left in
+          let right = map_ast self right in
+
+          constrain (Tast.T.type_of left) (Tast.T.type_of right);
+          let op =
+            let open Primop in
+            let lhs = Tast.T.type_of left in
+            let rhs = Tast.T.type_of right in
+            match (relop, lhs, rhs) with
+            | Eq, Sint_type, Sint_type -> Tint_eq
+            | Neq, Sint_type, Sint_type -> Tint_ne
+            | Geq, Sint_type, Sint_type -> Tint_ge
+            | Leq, Sint_type, Sint_type -> Tint_le
+            | Lt, Sint_type, Sint_type -> Tint_lt
+            | Gt, Sint_type, Sint_type -> Tint_gt
+            | Eq, Sfloat_type, Sfloat_type -> Tfloat_eq
+            | Neq, Sfloat_type, Sfloat_type -> Tfloat_ne
+            | Geq, Sfloat_type, Sfloat_type -> Tfloat_ge
+            | Leq, Sfloat_type, Sfloat_type -> Tfloat_le
+            | Lt, Sfloat_type, Sfloat_type -> Tfloat_lt
+            | Gt, Sfloat_type, Sfloat_type -> Tfloat_gt
+            | Eq, Sbool_type, Sbool_type -> Tbool_eq
+            | Neq, Sbool_type, Sbool_type -> Tbool_ne
+            | _ -> assert false
+          in
+          Tprimop { op; args = [ left; right ]; span; type' = Sbool_type }
       | Uvar { value; span } when Self.contains self value ->
           let type' = Self.find self value in
           let type' = TypeScheme.instantiate type' (Self.level self) in
           Tvar { value; span; type' }
       | Uvar { value; span } -> raise (Unbound_variable { value; span })
+      | Utuple { values = []; span } -> Tunit { span }
+      | Utuple { values = [ value ]; _ } -> map_ast self value
+      | Utuple { values; span } ->
+          let values = List.map values ~f:(map_ast self) in
+          let first, second, rest =
+            match values with
+            | first :: second :: rest -> (first, second, rest)
+            | _ -> assert false
+          in
+          Ttuple { first; second; rest; span }
+      | Usubscript { value; index; span } ->
+          let value = map_ast self value in
+          let index = map_ast self index in
+          let res = S.Fresh_var.f (Self.level self) in
+          constrain (Tast.T.type_of value)
+            (SimpleType.Stuple_type { first = res; second = res; rest = [] });
+          constrain (Tast.T.type_of index) Sint_type;
+          Tsubscript { value; index; span; type' = res }
       | Urecord { fields; span } ->
           Trecord
             {
@@ -404,6 +510,18 @@ functor
             (SimpleType.Sfunction_type
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
+      | Uif { cond; then_; else_; span } ->
+          let cond = map_ast self cond in
+          constrain (Tast.T.type_of cond) Sbool_type;
+          let type' =
+            let self = Self.level_up self in
+            S.Fresh_var.f (Self.level self)
+          in
+          let then_ = map_ast self then_ in
+          constrain (Tast.T.type_of then_) type';
+          let else_ = map_ast self else_ in
+          constrain (Tast.T.type_of else_) type';
+          Tif { cond; then_; else_; span; type' }
 
     and map_closure self
         (Syntax.Uclosure
@@ -468,6 +586,14 @@ module Tests = struct
     run_it {| 1 |};
     [%expect {| Sint_type |}]
 
+  let%expect_test "type neg int" =
+    run_it {| -1 |};
+    [%expect {| Sint_type |}]
+
+  let%expect_test "parse float" =
+    run_it "3.14";
+    [%expect {| Sfloat_type |}]
+
   let%expect_test "vars must be defined" =
     run_it {| x |};
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
@@ -508,4 +634,63 @@ module Tests = struct
     |};
     [%expect
       {| (Svar_type(state(VariableState(name(Symbol __3))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+
+  let%expect_test "type binop" =
+    run_it "1 + 2";
+    [%expect {| Sint_type |}]
+
+  let%expect_test "type float binop" =
+    run_it "1.0 + 2.0";
+    [%expect {| Sint_type |}]
+
+  let%expect_test "type binop precedence" =
+    run_it "1 + 2 * 3";
+    [%expect {| Sint_type |}]
+
+  let%expect_test "type relop" =
+    run_it "1 < 2";
+    [%expect {| Sbool_type |}]
+
+  let%expect_test "type float relop" =
+    run_it "1.0 < 2.0";
+    [%expect {| Sbool_type |}]
+
+  let%expect_test "type binop paren" =
+    run_it "(1 + 2) * 3";
+    [%expect {| Sint_type |}]
+
+  let%expect_test "bad binop" =
+    run_it "1 + 0.67";
+    [%expect {| ("Fx__Typing.Constrain_error(0, 1)") |}]
+
+  let%expect_test "bool eq" =
+    run_it "true == false";
+    [%expect {| Sbool_type |}]
+
+  let%expect_test "if" =
+    run_it "if true then 1 else 0";
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sint_type Sint_type))(upper_bounds())))) |}]
+
+  let%expect_test "if union" =
+    run_it "if true then 1 else 0.0";
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sfloat_type Sint_type))(upper_bounds())))) |}]
+
+  let%expect_test "type paren" =
+    run_it "(1)";
+    [%expect {| Sint_type |}]
+
+  let%expect_test "type tuple" =
+    run_it "(1, 2)";
+    [%expect {| (Stuple_type(first Sint_type)(second Sint_type)(rest())) |}]
+
+  let%expect_test "tuple single" =
+    run_it "(1,)";
+    [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
+
+  let%expect_test "tuple index" =
+    run_it "(1, 2)[0]";
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
 end

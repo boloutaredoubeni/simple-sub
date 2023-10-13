@@ -1,10 +1,30 @@
 open Core
 open Text
 
+module Op = struct
+  type t = Add | Sub | Mul | Div | Eq | Neq | Lt | Gt | Leq | Geq
+  [@@deriving compare, sexp]
+end
+
+(*
+   TODO: tuples/unit, arrays, mut, for loop
+*)
+
 type t =
   | Uint of { value : int; span : (Span.span[@compare.ignore]) }
+  | Ufloat of { value : float; span : (Span.span[@compare.ignore]) }
+  | Ubool of { value : bool; span : (Span.span[@compare.ignore]) }
   | Uvar of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
   | Uapp of { fn : t; value : t; span : (Span.span[@compare.ignore]) }
+  | Uneg of { value : t; span : (Span.span[@compare.ignore]) }
+  | Uop of {
+      op : Op.t;
+      left : t;
+      right : t;
+      span : (Span.span[@compare.ignore]);
+    }
+  | Utuple of { values : t list; span : (Span.span[@compare.ignore]) }
+  | Usubscript of { value : t; index : t; span : (Span.span[@compare.ignore]) }
   | Urecord of {
       fields : (Symbol.t * t) list;
       span : (Span.span[@compare.ignore]);
@@ -33,6 +53,12 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Ulambda of { closure : closure }
+  | Uif of {
+      cond : t;
+      then_ : t;
+      else_ : t;
+      span : (Span.span[@compare.ignore]);
+    }
 [@@deriving compare, sexp]
 
 and closure =
@@ -55,14 +81,21 @@ module Spanned : Span.SPANNED = struct
 
   let span = function
     | Uint { span; _ } -> span
+    | Ubool { span; _ } -> span
+    | Ufloat { span; _ } -> span
     | Uvar { span; _ } -> span
     | Uapp { span; _ } -> span
     | Urecord { span; _ } -> span
+    | Utuple { span; _ } -> span
+    | Usubscript { span; _ } -> span
     | Uselect { span; _ } -> span
     | Ulet { span; _ } -> span
     | Ulet_fun { span; _ } -> span
     | Ulambda { closure = Uclosure { span; _ }; _ } -> span
     | Udef { span; _ } -> span
+    | Uop { span; _ } -> span
+    | Uneg { span; _ } -> span
+    | Uif { span; _ } -> span
 end
 
 module Closure = struct

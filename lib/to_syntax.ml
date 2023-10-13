@@ -27,6 +27,16 @@ module Tests = struct
     [%expect
       {| (Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 1)))))) |}]
 
+  let%expect_test "parse neg int" =
+    run_it "-1";
+    [%expect
+      {| (Uint(value -1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2)))))) |}]
+
+  let%expect_test "parse float" =
+    run_it "3.14";
+    [%expect
+      {| (Ufloat(value 3.14)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
+
   let%expect_test "parse var" =
     run_it "x";
     [%expect
@@ -36,6 +46,10 @@ module Tests = struct
     run_it "f x";
     [%expect
       {| (Uapp(fn(Uvar(value(Symbol f))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 1)))))))(value(Uvar(value(Symbol x))(span(Span(filename"")(start(Position(line 1)(column 2)))(finish(Position(line 1)(column 3)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 3)))))) |}]
+
+  let%expect_test "no empty records" =
+    run_it "{}";
+    [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
 
   let%expect_test "record" =
     run_it "{x=1}";
@@ -74,4 +88,59 @@ module Tests = struct
   let%expect_test "bad def" =
     run_it "def f = x in f 0";
     [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
+
+  let%expect_test "binop" =
+    run_it "1 + 2";
+    [%expect
+      {| (Uop(op Add)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 1)))))))(right(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 5)))))) |}]
+
+  let%expect_test "binop precedence" =
+    run_it "1 + 2 * 3";
+    [%expect
+      {| (Uop(op Add)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 1)))))))(right(Uop(op Mul)(left(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5)))))))(right(Uint(value 3)(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9)))))))(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 9)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
+
+  let%expect_test "relop" =
+    run_it "1 < 2";
+    [%expect
+      {| (Uop(op Lt)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 1)))))))(right(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 5)))))) |}]
+
+  let%expect_test "bool" =
+    run_it "true";
+    [%expect
+      {| (Ubool(value true)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
+
+  let%expect_test "binop paren" =
+    run_it "(1 + 2) * 3";
+    [%expect
+      {| (Uop(op Mul)(left(Utuple(values((Uop(op Add)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2)))))))(right(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 5)))(finish(Position(line 1)(column 6)))))))(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 6))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 7)))))))(right(Uint(value 3)(span(Span(filename"")(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 11)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 11)))))) |}]
+
+  let%expect_test "if" =
+    run_it "if 1 < 2 then 2 else 3";
+    [%expect
+      {| (Uif(cond(Uop(op Lt)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))(right(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8)))))))(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 8)))))))(then_(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 14)))(finish(Position(line 1)(column 15)))))))(else_(Uint(value 3)(span(Span(filename"")(start(Position(line 1)(column 21)))(finish(Position(line 1)(column 22)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 22)))))) |}]
+
+  let%expect_test "unit" =
+    run_it "()";
+    [%expect
+      {| (Utuple(values())(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
+
+  let%expect_test "paren" =
+    run_it "(1)";
+    [%expect
+      {| (Utuple(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 3)))))) |}]
+
+  let%expect_test "tuple" =
+    run_it "(1, 2)";
+    [%expect
+      {| (Utuple(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))) |}]
+
+  let%expect_test "tuple single" =
+    (* TODO: interpret as box[T] *)
+    run_it "(1,)";
+    [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
+
+  let%expect_test "tuple index" =
+    run_it "(1, 2)[0]";
+    [%expect
+      {| (Usubscript(value(Utuple(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
 end

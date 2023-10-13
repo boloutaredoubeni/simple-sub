@@ -159,9 +159,9 @@ module Tests : sig end = struct
     let module Temp = MakeFxTemp (struct
       let prefix = "print"
     end) in
-    Temp.with_file "- 9 asdasd--" (fun file ->
+    Temp.with_file "asdasd|" (fun file ->
         run_it "printer" [ "-dump-ast"; file ]);
-    [%expect {| ("Fx__Lexer.SyntaxError(\"\", \"-\", _)") |}]
+    [%expect {| ("Fx__Lexer.SyntaxError(\"\", \"|\", _)") |}]
 
   let%expect_test "ast dump valid" =
     let module Temp = MakeFxTemp (struct

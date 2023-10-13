@@ -13,6 +13,9 @@ module Position = struct
 
   let default = Position { line = 0; column = 0 }
 
+  let to_string (Position { line; column }) =
+    Printf.sprintf "line %d, column %d" line column
+
   module Tests = struct
     let%test_unit "default positions" = [%test_eq: t] default (create (0, 0))
 

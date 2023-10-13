@@ -12,6 +12,7 @@ module type MAPPER = sig
     is_rec:Symbol.t option -> self -> Tast.Closure.t -> Lambda.Closure.t
 
   val map_type : self -> Tast.SimpleType.t -> Lambda.Type.t
+  val map_primop : self -> Tast.Primop.t -> Lambda.Primop.t
 end
 
 module Type_env = struct
@@ -42,6 +43,19 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     let open Lambda in
     match t with
     | Tint { value; span } -> Lint { value; span }
+    | Tfloat { value; span } -> Lfloat { value; span }
+    | Tbool { value; span } -> Lbool { value; span }
+    | Tunit { span } -> Lunit { span }
+    | Ttuple { first; second; rest; span } ->
+        let first = map_ast self first in
+        let second = map_ast self second in
+        let rest = List.map rest ~f:(map_ast self) in
+        Ltuple { first; second; rest; span }
+    | Tsubscript { value; index; span; type' } ->
+        let value = map_ast self value in
+        let index = map_ast self index in
+        let type' = map_type self type' in
+        Lsubscript { value; index; span; type' }
     | Trecord { fields; span } ->
         let fields =
           List.map fields ~f:(fun (name, t) ->
@@ -87,12 +101,23 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let value = map_ast self value in
         let type' = map_type self type' in
         Lapp { fn; value; type'; span }
+    | Tprimop { op; args; type'; span } ->
+        let args = List.map args ~f:(map_ast self) in
+        let type' = map_type self type' in
+        let op = map_primop self op in
+        Lprimop { op; args; type'; span }
     | Tdef { name; closure; fn_type; app; span } ->
         let fn_type = map_type self fn_type in
         let self = Type_env.add ~key:name ~data:fn_type self in
         let closure = map_closure ~is_rec:(Some name) self closure in
         let app = map_ast self app in
         Ldef { name; closure; span; app; fn_type }
+    | Tif { cond; then_; else_; span; type' } ->
+        let cond = map_ast self cond in
+        let then_ = map_ast self then_ in
+        let else_ = map_ast self else_ in
+        let type' = map_type self type' in
+        Lif { cond; then_; else_; span; type' }
 
   and map_closure ~is_rec self
       (Tclosure
@@ -117,6 +142,35 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let parameter = Lparam { value; span = bind_span; type' } in
         Lrec_closure { self = fix; parameter; value = closure_body; span }
 
+  and map_primop _self =
+    let open Tast.Primop in
+    let open Lambda.Primop in
+    function
+    | Tint_add -> Lint_add
+    | Tint_sub -> Lint_sub
+    | Tint_mul -> Lint_mul
+    | Tint_div -> Lint_div
+    | Tint_eq -> Lint_eq
+    | Tint_lt -> Lint_lt
+    | Tint_gt -> Lint_gt
+    | Tint_le -> Lint_le
+    | Tint_ge -> Lint_ge
+    | Tint_ne -> Lint_neq
+    | Tint_neg -> Lint_neg
+    | Tfloat_add -> Lfloat_add
+    | Tfloat_sub -> Lfloat_sub
+    | Tfloat_mul -> Lfloat_mul
+    | Tfloat_div -> Lfloat_div
+    | Tfloat_eq -> Lfloat_eq
+    | Tfloat_lt -> Lfloat_lt
+    | Tfloat_gt -> Lfloat_gt
+    | Tfloat_le -> Lfloat_le
+    | Tfloat_ge -> Lfloat_ge
+    | Tfloat_ne -> Lfloat_neq
+    | Tfloat_neg -> Lfloat_neg
+    | Tbool_eq -> Lbool_eq
+    | Tbool_ne -> Lbool_neq
+
   and map_type _self t =
     let open Tast in
     let recursive = ref (Map.empty (module Polar.Variable)) in
@@ -129,11 +183,22 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
       let open Core in
       match polar with
       | PolarType { type' = Sint_type; _ } -> Ty_int
+      | PolarType { type' = Sbool_type; _ } -> Ty_bool
+      | PolarType { type' = Sfloat_type; _ } -> Ty_float
+      | PolarType { type' = Sunit_type; _ } -> Ty_unit
       | PolarType { type' = Sfunction_type { argument; result }; polar } ->
           let argument = Polar.Type.create argument (Polar.not polar) in
           let result = Polar.Type.create result polar in
           Ty_function
             { argument = f argument in_process; result = f result in_process }
+      | PolarType { type' = Stuple_type { first; second; rest }; polar } ->
+          let first = Polar.Type.create first polar in
+          let second = Polar.Type.create second polar in
+          let rest = List.map rest ~f:(fun t -> Polar.Type.create t polar) in
+          let first = f first in_process in
+          let second = f second in_process in
+          let rest = List.map rest ~f:(fun t -> f t in_process) in
+          Ty_tuple { first; second; rest }
       | PolarType { type' = Srecord { fields }; polar } ->
           let fields =
             List.map fields ~f:(fun (name, t) ->
@@ -201,8 +266,8 @@ module Tests = struct
        in
        let (module Type_term) = (module Typing.Make (S) : Typing.MAPPER) in
        let%bind t = Type_term.map ast in
-       let (module Coalescer) = (module Make (Fresh_sym) : MAPPER) in
-       let%bind t = Coalescer.map t in
+       let (module To_lambda) = (module Make (Fresh_sym) : MAPPER) in
+       let%bind t = To_lambda.map t in
        let open Lambda in
        t |> Lambda.type_of |> Type.sexp_of_t |> Sexp.to_string |> Ok)
       |> Or_error.ok_exn |> print_endline
@@ -217,6 +282,14 @@ module Tests = struct
   let%expect_test "type int" =
     run_it {| 1 |};
     [%expect {| Ty_int |}]
+
+  let%expect_test "type neg int" =
+    run_it {| - 1 |};
+    [%expect {| Ty_int |}]
+
+  let%expect_test "parse float" =
+    run_it "3.14";
+    [%expect {| Ty_float |}]
 
   let%expect_test "vars must be defined" =
     run_it {| x |};
@@ -257,4 +330,46 @@ module Tests = struct
       f
     |};
     [%expect {| (Ty_variable(name(Symbol __6))) |}]
+
+  let%expect_test "type binop" =
+    run_it "1 + 2";
+    [%expect {| Ty_int |}]
+
+  let%expect_test "type binop precedence" =
+    run_it "1 + 2 * 3";
+    [%expect {| Ty_int |}]
+
+  let%expect_test "type relop" =
+    run_it "1 < 2";
+    [%expect {| Ty_bool |}]
+
+  let%expect_test "type binop paren" =
+    run_it "(1 + 2) * 3";
+    [%expect {| Ty_int |}]
+
+  let%expect_test "if" =
+    run_it "if true then 1 else 0";
+    [%expect
+      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)) |}]
+
+  let%expect_test "if union" =
+    run_it "if true then 1 else 0.0";
+    [%expect
+      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_float)))(rhs Ty_int)) |}]
+
+  let%expect_test "paren" =
+    run_it "(1)";
+    [%expect {| Ty_int |}]
+
+  let%expect_test "tuple" =
+    run_it "(1, 2)";
+    [%expect {| (Ty_tuple(first Ty_int)(second Ty_int)(rest())) |}]
+
+  let%expect_test "tuple single" =
+    run_it "(1,)";
+    [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
+
+  let%expect_test "tuple index" =
+    run_it "(1, 2)[0]";
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
 end
