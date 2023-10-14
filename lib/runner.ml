@@ -53,5 +53,8 @@ module Make (S : S) : T = struct
   let run () =
     match f () with
     | Ok () -> ()
-    | Error e -> print_endline (Error.to_string_hum e)
+    | Error e ->
+        let exn = Error.to_exn e in
+        let sexp = Exn.sexp_of_t exn in
+        print_endline (Sexp.to_string sexp)
 end

@@ -5,10 +5,18 @@ open Tast
 exception Unbound_variable of { value : Symbol.t; span : Span.t }
 exception Missing_record_field of { value : Symbol.t }
 exception Missing_tuple_index of { value : int }
-exception Constrain_error of { lhs : SimpleType.t; rhs : SimpleType.t }
+exception Constrain_error of { lhs : Simple_type.t; rhs : Simple_type.t }
+exception Captured_mutable of { value : Symbol.t; span : Span.t }
+
+exception
+  Invalid_operation of {
+    op : Syntax.Op.t;
+    args : Simple_type.t list;
+    span : Span.t;
+  }
 
 module type FRESH_VAR = sig
-  val f : Level.t -> SimpleType.t
+  val f : Level.t -> Simple_type.t
 end
 
 let create_fresh_vars ~fresher =
@@ -23,11 +31,11 @@ let create_fresh_vars ~fresher =
   end : FRESH_VAR)
 
 module type SCHEME = sig
-  type t = private Sch_simple of SimpleType.t | Sch_poly of PolymorhicType.t
+  type t = private Sch_simple of Simple_type.t | Sch_poly of PolymorhicType.t
 
-  val of_simple_type : SimpleType.t -> t
+  val of_simple_type : Simple_type.t -> t
   val of_polymorphic_type : PolymorhicType.t -> t
-  val instantiate : t -> Level.t -> SimpleType.t
+  val instantiate : t -> Level.t -> Simple_type.t
   val level : t -> Level.t
 end
 
@@ -36,13 +44,13 @@ functor
   (Fresh_var : FRESH_VAR)
   ->
   struct
-    type t = Sch_simple of SimpleType.t | Sch_poly of PolymorhicType.t
+    type t = Sch_simple of Simple_type.t | Sch_poly of PolymorhicType.t
 
     let of_simple_type t = Sch_simple t
     let of_polymorphic_type t = Sch_poly t
 
     let instantiate t lvl =
-      let open SimpleType in
+      let open Simple_type in
       let open PolymorhicType in
       match t with
       | Sch_simple t -> t
@@ -59,10 +67,12 @@ functor
             in
 
             let rec freshen ty =
-              let type_level = SimpleType.level ty in
+              let type_level = Simple_type.level ty in
               if Level.compare type_level limit < 1 then ty
               else
                 match ty with
+                | Smutable { type'; scope } ->
+                    Smutable { type' = freshen type'; scope }
                 | Svar_type { state } -> (
                     match freshened#get state with
                     | Some state -> Svar_type { state }
@@ -118,13 +128,13 @@ functor
           freshen_above limit body lvl
 
     and level = function
-      | Sch_simple t -> SimpleType.level t
+      | Sch_simple t -> Simple_type.level t
       | Sch_poly (PolymorhicType { level; _ }) -> level
   end
 
 module Extrude = struct
   module type T = sig
-    val f : Polar.Type.t -> SimpleType.t
+    val f : Polar.Type.t -> Simple_type.t
   end
 
   module Self = struct
@@ -152,7 +162,7 @@ module Extrude = struct
       let open Level in
       if Polar.Type.level t <= Self.level self then Polar.Type.type_of t
       else
-        let open SimpleType in
+        let open Simple_type in
         let polarity = Polar.Type.polarity t in
         let create_type t = Polar.Type.create t polarity in
         match Polar.Type.type_of t with
@@ -160,6 +170,8 @@ module Extrude = struct
         | Sfloat_type -> Sfloat_type
         | Sbool_type -> Sbool_type
         | Sunit_type -> Sunit_type
+        | Smutable { type'; scope } ->
+            Smutable { type' = extrude self (create_type type'); scope }
         | Sfunction_type { argument; result } ->
             Sfunction_type
               {
@@ -225,13 +237,13 @@ end
 
 module Constrain = struct
   module type T = sig
-    val f : SimpleType.t -> SimpleType.t -> unit
+    val f : Simple_type.t -> Simple_type.t -> unit
   end
 
   module Make (Fresh_sym : FRESH_SYM) : T = struct
     module Constraint = struct
       module T = struct
-        type t = Constraint of { lhs : SimpleType.t; rhs : SimpleType.t }
+        type t = Constraint of { lhs : Simple_type.t; rhs : Simple_type.t }
         [@@deriving sexp, compare]
       end
 
@@ -267,6 +279,11 @@ module Constrain = struct
         | Sint_type, Sint_type -> ()
         | Sfloat_type, Sfloat_type -> ()
         | Sbool_type, Sbool_type -> ()
+        | Sunit_type, Sunit_type -> ()
+        | Smutable { type' = lhs; _ }, rhs ->
+            constrain (Constraint { lhs; rhs })
+        | lhs, Smutable { type' = rhs; _ } ->
+            constrain (Constraint { lhs; rhs })
         | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
             Sfunction_type { argument = rhs_arg; result = rhs_res } ) ->
             constrain (Constraint { lhs = lhs_arg; rhs = rhs_arg });
@@ -329,14 +346,14 @@ module Constrain = struct
                     constrain (Constraint { lhs = lhs_type; rhs = rhs_type })
                 | None -> raise (Missing_record_field { value = rhs_field }))
         | Svar_type { state = lhs_state }, rhs
-          when SimpleType.level rhs <= Variable.level lhs_state ->
+          when Simple_type.level rhs <= Variable.level lhs_state ->
             Variable.upper_bounds lhs_state
             := rhs :: !(Variable.upper_bounds lhs_state);
             List.iter
               !(Variable.lower_bounds lhs_state)
               ~f:(fun lhs -> constrain (Constraint { lhs; rhs }))
         | lhs, Svar_type { state = rhs_state }
-          when SimpleType.level lhs <= Variable.level rhs_state ->
+          when Simple_type.level lhs <= Variable.level rhs_state ->
             Variable.lower_bounds rhs_state
             := lhs :: !(Variable.lower_bounds rhs_state);
             List.iter
@@ -362,7 +379,6 @@ module type MAPPER = sig
   val map : Syntax.t -> Tast.t Or_error.t
   val map_ast : self -> Syntax.t -> Tast.t
   val map_closure : self -> Syntax.Closure.t -> Closure.t
-  val map_pattern : self -> Syntax.Pattern.t -> Pattern.t
 end
 
 module type S = sig
@@ -382,21 +398,33 @@ functor
         | Self of {
             self : (Symbol.t, TypeScheme.t, Symbol.comparator_witness) Map.t;
             level : Level.t;
+            scope : Scope.t;
           }
 
       let create () =
-        Self { self = Map.empty (module Symbol); level = Level.default }
+        Self
+          {
+            self = Map.empty (module Symbol);
+            level = Level.default;
+            scope = Scope.default;
+          }
 
       let contains (Self { self; _ }) v = Map.mem self v
       let level (Self { level; _ }) = level
 
-      let level_up (Self { self; level }) =
-        Self { self; level = Level.level_up level }
+      let level_up (Self { self; level; scope }) =
+        Self { self; level = Level.level_up level; scope }
 
-      let find (Self { self; _ }) v = Map.find_exn self v
+      let find_exn (Self { self; _ }) v = Map.find_exn self v
+      let find (Self { self; _ }) v = Map.find self v
 
-      let add (Self { self; level }) ~key ~data =
-        Self { self = Map.add_exn self ~key ~data; level }
+      let add (Self { self; level; scope }) ~key ~data =
+        Self { self = Map.add_exn self ~key ~data; level; scope }
+
+      let incr_scope (Self { self; level; scope }) =
+        Self { self; level; scope = Scope.incr scope }
+
+      let scope (Self { scope; _ }) = scope
     end
 
     type self = Self.t
@@ -408,6 +436,7 @@ functor
       C.f lhs rhs
 
     let rec map_ast self =
+      let open Simple_type in
       let open Syntax in
       let open Tast.T in
       let open Op in
@@ -437,7 +466,8 @@ functor
             | Sub, Sfloat_type, Sfloat_type -> Tfloat_sub
             | Mul, Sfloat_type, Sfloat_type -> Tfloat_mul
             | Div, Sfloat_type, Sfloat_type -> Tfloat_div
-            | _ -> assert false
+            | op, lhs, rhs ->
+                raise (Invalid_operation { op; args = [ lhs; rhs ]; span })
           in
           Tprimop { op; args = [ left; right ]; span; type' = Sint_type }
       (* NOTE: not eq and cmp are different concepts *)
@@ -471,7 +501,7 @@ functor
           in
           Tprimop { op; args = [ left; right ]; span; type' = Sbool_type }
       | Uvar { value; span } when Self.contains self value ->
-          let type' = Self.find self value in
+          let type' = Self.find_exn self value in
           let type' = TypeScheme.instantiate type' (Self.level self) in
           Tvar { value; span; type' }
       | Uvar { value; span } -> raise (Unbound_variable { value; span })
@@ -487,10 +517,7 @@ functor
           Ttuple { first; second; rest; span }
       | Uvector { values; span } ->
           let values = List.map values ~f:(map_ast self) in
-          let element =
-            let self = Self.level_up self in
-            S.Fresh_var.f (Self.level self)
-          in
+          let element = S.Fresh_var.f (Self.level self) in
           List.iter values ~f:(fun value ->
               constrain (Tast.T.type_of value) element);
           Tvector { values; span; element }
@@ -505,9 +532,34 @@ functor
           let index = map_ast self index in
           let res = S.Fresh_var.f (Self.level self) in
           constrain (Tast.T.type_of value)
-            (SimpleType.Svector_type { element = res });
+            (Simple_type.Svector_type { element = res });
           constrain (Tast.T.type_of index) Sint_type;
           Tsubscript { value; index; span; type' = res }
+      | Uassign { name; value; span } ->
+          let type' =
+            match Self.find self name with
+            | None -> failwith "unbound variable"
+            | Some scheme -> (
+                match TypeScheme.instantiate scheme (Self.level self) with
+                | Smutable { scope; _ } as type'
+                  when Scope.(scope = Self.scope self) ->
+                    type'
+                | Smutable _ -> raise (Captured_mutable { value = name; span })
+                | _ -> failwith "expected mutable")
+          in
+          let value = map_ast self value in
+          constrain (Tast.T.type_of value) type';
+          Tassign { name = (name, type'); value; span }
+      | Uassign_subscript { value; index; new_value; span } ->
+          let value = map_ast self value in
+          let new_value = map_ast self new_value in
+          let index = map_ast self index in
+          let res = S.Fresh_var.f (Self.level self) in
+          constrain (Tast.T.type_of value)
+            (Simple_type.Svector_type { element = res });
+          constrain (Tast.T.type_of index) Sint_type;
+          constrain (Tast.T.type_of new_value) res;
+          Tassign_subscript { value; index; new_value; span }
       | Urecord { fields; span } ->
           Trecord
             {
@@ -519,40 +571,36 @@ functor
           let res = S.Fresh_var.f (Self.level self) in
           let value = map_ast self value in
           constrain (Tast.T.type_of value)
-            (SimpleType.Srecord { fields = [ (field, res) ] });
+            (Simple_type.Srecord { fields = [ (field, res) ] });
           Tselect { value; field; span; type' = res }
       | Ulambda { closure } -> Tlambda { closure = map_closure self closure }
-      | Ulet
-          {
-            pattern = Upat_var { value = name; span = pat_span };
-            value;
-            app;
-            span;
-          } ->
+      | Ulet { binding; is_mutable; value; app; span } ->
           let value = map_ast (Self.level_up self) value in
           let level = Self.level self in
-          let type' = PolymorhicType.create level (Tast.T.type_of value) in
-          let type' = TypeScheme.of_polymorphic_type type' in
-          let app = map_ast (Self.add self ~key:name ~data:type') app in
-
-          Tlet
-            {
-              pattern =
-                Tpat_var
-                  {
-                    value = name;
-                    span = pat_span;
-                    type' = TypeScheme.instantiate type' level;
-                  };
-              value;
-              app;
-              span;
-            }
+          let type' = Tast.T.type_of value in
+          let scheme =
+            if is_mutable then
+              let type' =
+                Simple_type.Smutable { type'; scope = Self.scope self }
+              in
+              TypeScheme.of_simple_type type'
+            else
+              let type' = PolymorhicType.create level type' in
+              TypeScheme.of_polymorphic_type type'
+          in
+          let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
+          let type' = TypeScheme.instantiate scheme level in
+          Tlet { binding = (binding, type'); value; app; span }
+      | Useq { first; second; span } ->
+          let first = map_ast self first in
+          let second = map_ast self second in
+          Tseq { first; second; span }
       | Ulet_fun { name; closure; app; span } ->
           map_ast self
             (Ulet
                {
-                 pattern = Upat_var { value = name; span };
+                 binding = name;
+                 is_mutable = false;
                  value = Ulambda { closure };
                  app;
                  span;
@@ -573,7 +621,7 @@ functor
           in
           let app = map_ast self app in
           let fn_type =
-            TypeScheme.instantiate (Self.find self name) (Self.level self)
+            TypeScheme.instantiate (Self.find_exn self name) (Self.level self)
           in
           Tdef { name; closure; app; span; fn_type }
       | Uapp { fn; value; span } ->
@@ -581,7 +629,7 @@ functor
           let fn = map_ast self fn in
           let arg = map_ast self value in
           constrain (Tast.T.type_of fn)
-            (SimpleType.Sfunction_type
+            (Simple_type.Sfunction_type
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
       | Uif { cond; then_; else_; span } ->
@@ -597,24 +645,16 @@ functor
           constrain (Tast.T.type_of else_) type';
           Tif { cond; then_; else_; span; type' }
 
-    and map_closure self
-        (Syntax.Uclosure
-          {
-            parameter = Upat_var { value = name; span = pat_span };
-            value;
-            span;
-          }) =
+    and map_closure self (Syntax.Uclosure { parameter; value; span }) =
+      let self = Self.incr_scope self in
       let type' = S.Fresh_var.f (Self.level self) in
 
+      let self =
+        let type' = TypeScheme.of_simple_type type' in
+        Self.add self ~key:parameter ~data:type'
+      in
       Tclosure
-        {
-          parameter = Tpat_var { value = name; span = pat_span; type' };
-          value = map_ast self value;
-          span;
-        }
-
-    let map_pattern : self -> Syntax.Pattern.t -> Pattern.t =
-     fun _ _ -> failwith "TODO"
+        { parameter = (parameter, type'); value = map_ast self value; span }
 
     let map ast =
       Or_error.try_with (fun () ->
@@ -646,7 +686,7 @@ module Tests = struct
        in
        let (module Visitor) = (module Make (S) : MAPPER) in
        let%bind t = Visitor.map ast in
-       t |> Tast.T.type_of |> SimpleType.sexp_of_t |> Sexp.to_string |> Ok)
+       t |> Tast.T.type_of |> Simple_type.sexp_of_t |> Sexp.to_string |> Ok)
       |> Or_error.ok_exn |> print_endline
     with
     | () -> ()
@@ -776,20 +816,77 @@ module Tests = struct
   let%expect_test "empty vector" =
     run_it "[||]";
     [%expect
-      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds())(upper_bounds())))))) |}]
+      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds())))))) |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sint_type Sint_type))(upper_bounds())))))) |}]
+      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds())))))) |}]
 
   let%expect_test "heterogeneous vector" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))))) |}]
+      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))))) |}]
 
   let%expect_test "vector subscript" =
     run_it "[| 1, 2 |][0]";
     [%expect
       {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+
+  let%expect_test "let mut" =
+    run_it "let mut x = 1 in x";
+    [%expect {| (Smutable(type' Sint_type)(scope(Scope(value 0)))) |}]
+
+  let%expect_test "mut update" =
+    run_it "x = 1";
+    [%expect {| (Failure "unbound variable") |}]
+
+  let%expect_test "vector update" =
+    run_it "xs[0] = 1";
+    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+  let%expect_test "seq" =
+    run_it "1; 2";
+    [%expect {| Sint_type |}]
+
+  let%expect_test "let mut update" =
+    run_it "let mut a = 0 in a = 1";
+    [%expect {| Sunit_type |}]
+
+  let%expect_test "mut capture by value" =
+    run_it {| 
+      let mut a = 0 in
+      let f x -> a = x in
+      f 1 |};
+    [%expect {| ("Fx__Typing.Captured_mutable(_, _)") |}]
+
+  let%expect_test "mut closure" =
+    run_it
+      {|
+      let mut f = fn x -> x in
+      f 0;
+      f = fn x -> x + 1;
+      f 0
+    |};
+    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+
+  let%expect_test "disjoint mut" =
+    run_it
+      {|
+      let mut f = fn x -> x in
+      f 0;
+      f = 7;
+      f 0
+    |};
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+
+  let%expect_test "value restriction" =
+    run_it
+      {|
+      let mut c = fn x -> x in
+      c = (fn x -> x + 1);
+      c true
+      |};
+    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
 end

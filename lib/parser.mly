@@ -6,7 +6,7 @@
 %token <int> INT
 %token <float> FLOAT
 %token <Text.Symbol.t> IDENT
-%token LET
+%token LET MUT
 %token EQUAL RIGHT_ARROW
 %token IN
 %token DEF FN
@@ -18,6 +18,7 @@
 %token TRUE FALSE
 %token IF THEN ELSE
 %token COMMA
+%token SEMICOLON
 %token PLUS MINUS STAR SLASH
 %token EQUAL_EQUAL LESS GREATER LESS_EQUAL GREATER_EQUAL NOT_EQUAL
 %token EOF
@@ -30,75 +31,77 @@ program
     : expr? EOF { $1 }
 
 simple_expr
-    : INT { Uint { value=$1; span=Span.create $sloc } }
-    | FLOAT { Ufloat { value=$1; span=Span.create $sloc } }
+    : value = INT { Uint { value; span=Span.create $sloc } }
+    | value = FLOAT { Ufloat { value; span=Span.create $sloc } }
     | TRUE { Ubool { value=true; span=Span.create $sloc } }
     | FALSE { Ubool { value=false; span=Span.create $sloc } }
-    | IDENT { Uvar { value=$1; span=Span.create $sloc } }
-    | simple_expr LBRACKET expr RBRACKET { Usubscript { value=$1; index=$3; span=Span.create $sloc } }  
-    | simple_expr DOT INT { Utuple_subscript { value=$1; index=$3; span=Span.create $sloc } }
-    | simple_expr DOT IDENT { Uselect { value=$1; field=$3; span=Span.create $sloc } }
-    | LBRACE record_fields RBRACE { Urecord { fields=$2; span=Span.create $sloc } }
-    | LPAREN elements RPAREN { Utuple { values=$2; span=Span.create $sloc } }
-    | LBRACKET_BAR elements RBRACKET_BAR { Uvector { values=$2; span=Span.create $sloc } }
+    | value = IDENT { Uvar { value; span=Span.create $sloc } }
+    | value = simple_expr LBRACKET index = expr RBRACKET { Usubscript { value; index; span=Span.create $sloc } }  
+    | name = IDENT EQUAL value=expr { Uassign { name; value; span=Span.create $sloc } }
+    | value = simple_expr LBRACKET index = expr RBRACKET EQUAL new_value = expr { Uassign_subscript { value; index; new_value; span=Span.create $sloc } }
+    | value = simple_expr DOT index = INT { Utuple_subscript { value; index; span=Span.create $sloc } }
+    | value = simple_expr DOT field = IDENT { Uselect { value; field; span=Span.create $sloc } }
+    | LBRACE fields = record_fields RBRACE { Urecord { fields; span=Span.create $sloc } }
+    | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
+    | LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { values; span=Span.create $sloc } }
 
 expr
-    : simple_expr { $1 }
-    | simple_expr expr  { Uapp{ fn=$1; value=$2; span=Span.create $sloc } }
-    | MINUS expr {
-        match $2 with
+    : value = simple_expr { value }
+    | fn = simple_expr value = expr  { Uapp{ fn; value; span=Span.create $sloc } }
+    | MINUS value = expr {
+        match value with
         | Uint { value; span } -> Uint { value=(-value); span }   
-        | _ -> Uneg { value=$2; span=Span.create $sloc }
+        | _ -> Uneg { value; span=Span.create $sloc }
     }
-    | expr PLUS expr { Uop { op=Op.Add; left=$1; right=$3; span=Span.create $sloc } }
-    | expr MINUS expr { Uop { op=Op.Sub; left=$1; right=$3; span=Span.create $sloc } }
-    | expr STAR expr { Uop { op=Op.Mul; left=$1; right=$3; span=Span.create $sloc } }
-    | expr SLASH expr { Uop { op=Op.Div; left=$1; right=$3; span=Span.create $sloc } }
-    | expr EQUAL_EQUAL expr { Uop { op=Op.Eq; left=$1; right=$3; span=Span.create $sloc } }
-    | expr LESS expr { Uop { op=Op.Lt; left=$1; right=$3; span=Span.create $sloc } }
-    | expr GREATER expr { Uop { op=Op.Gt; left=$1; right=$3; span=Span.create $sloc } }
-    | expr LESS_EQUAL expr { Uop { op=Op.Leq; left=$1; right=$3; span=Span.create $sloc } }
-    | expr GREATER_EQUAL expr { Uop { op=Op.Geq; left=$1; right=$3; span=Span.create $sloc } }
-    | expr NOT_EQUAL expr { Uop { op=Op.Neq; left=$1; right=$3; span=Span.create $sloc } }
-    | IF expr THEN expr ELSE expr { Uif { cond=$2; then_=$4; else_=$6; span=Span.create $sloc } }
-    | LET pattern EQUAL expr IN expr { Ulet { pattern=$2; value=$4; app=$6; span=Span.create $sloc } }
-    | LET IDENT pattern RIGHT_ARROW expr IN expr { 
+    | left = expr PLUS right = expr { Uop { op=Op.Add; left; right; span=Span.create $sloc } }
+    | left = expr MINUS right = expr { Uop { op=Op.Sub; left; right; span=Span.create $sloc } }
+    | left = expr STAR right = expr { Uop { op=Op.Mul; left; right; span=Span.create $sloc } }
+    | left = expr SLASH right = expr { Uop { op=Op.Div; left; right; span=Span.create $sloc } }
+    | left = expr EQUAL_EQUAL right = expr { Uop { op=Op.Eq; left; right; span=Span.create $sloc } }
+    | left = expr LESS right = expr { Uop { op=Op.Lt; left; right; span=Span.create $sloc } }
+    | left = expr GREATER right = expr { Uop { op=Op.Gt; left; right; span=Span.create $sloc } }
+    | left = expr LESS_EQUAL right = expr { Uop { op=Op.Leq; left; right; span=Span.create $sloc } }
+    | left = expr GREATER_EQUAL right = expr { Uop { op=Op.Geq; left; right; span=Span.create $sloc } }
+    | left = expr NOT_EQUAL right = expr { Uop { op=Op.Neq; left; right; span=Span.create $sloc } }
+    | IF cond = expr THEN then_ = expr ELSE else_ = expr { Uif { cond; then_; else_; span=Span.create $sloc } }
+    | first = expr SEMICOLON second = expr { Useq { first; second; span=Span.create $sloc } }
+    | LET binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; is_mutable=false; value; app; span=Span.create $sloc } }
+    | LET MUT binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; is_mutable=true; value; app; span=Span.create $sloc } }
+    | LET name = IDENT parameter = IDENT RIGHT_ARROW value = expr IN app = expr { 
         Ulet_fun { 
-            name = $2; 
+            name; 
             closure = Uclosure  { 
-                    parameter = $3; 
-                    value = $5; 
-                    span = Span.create ($startpos($3), $startpos($5)) 
+                    parameter; 
+                    value; 
+                    span = Span.create ($startpos(name), $startpos(value)) 
                 }; 
-                app = $7;
+                app;
                 span = Span.create $sloc  
             }
         }
-    | FN pattern RIGHT_ARROW expr { 
-        let lambda = Uclosure { parameter=$2; value=$4; span=Span.create $sloc } in 
+    | FN parameter = IDENT RIGHT_ARROW value = expr { 
+        let lambda = Uclosure { parameter;  value; span=Span.create $sloc } in 
         Ulambda { closure=lambda }
     }
-    | DEF IDENT pattern EQUAL expr IN expr { 
+    | DEF name = IDENT parameter = IDENT EQUAL value = expr IN app = expr { 
         Udef { 
-            name = $2; 
+            name; 
             closure = Uclosure  { 
-                    parameter = $3; 
-                    value = $5; 
-                    span = Span.create ($startpos($3), $startpos($5)) 
+                    parameter; 
+                    value; 
+                    span = Span.create ($startpos(name), $startpos(value)) 
                 }; 
-                app = $7;
+                app;
                 span = Span.create $sloc
             }      
         }
 
-pattern
-    : IDENT { Upat_var { value=$1; span=Span.create $sloc } }
-
 record_fields
-    : separated_nonempty_list(COMMA, record_field) { $1 }
+    : fields = separated_nonempty_list(COMMA, record_field) { fields }
 
 record_field
-    : IDENT EQUAL expr { ($1, $3) }
+(* TODO mutable records, maybe be an alternative to refs btw *)
+    : field = IDENT EQUAL value = expr { (field, value) }
 
 elements
     : separated_list(COMMA, expr) { $1 }

@@ -7,12 +7,9 @@ module Op = struct
 end
 
 (*
-   DONE: simple-sub demo
-   DONE: 
-   TODO: let-tuple/unit, arrays, mut, for loop, extern
-   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
-   TODO: suspend/resume continuations
-   TODO: continuation based concurrency, interfaces, error/exceptions, tensors
+   TODO: tuple pattern,  mut, for loop, extern
+   TODO: part 2. cubiml i.e. tags/pattern matching, tuple patterns, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
+   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting
    TODO: ownership based reference counting
    TODO: compilation to WASM and/or LLVM
 *)
@@ -32,6 +29,17 @@ type t =
     }
   | Utuple of { values : t list; span : (Span.span[@compare.ignore]) }
   | Uvector of { values : t list; span : (Span.span[@compare.ignore]) }
+  | Uassign_subscript of {
+      value : t;
+      index : t;
+      new_value : t;
+      span : (Span.span[@compare.ignore]);
+    }
+  | Uassign of {
+      name : Symbol.t;
+      value : t;
+      span : (Span.span[@compare.ignore]);
+    }
   | Utuple_subscript of {
       value : t;
       index : int;
@@ -47,8 +55,10 @@ type t =
       field : Symbol.t;
       span : (Span.span[@compare.ignore]);
     }
+  | Useq of { first : t; second : t; span : (Span.span[@compare.ignore]) }
   | Ulet of {
-      pattern : pat;
+      binding : Symbol.t;
+      is_mutable : bool;
       value : t;
       app : t;
       span : (Span.span[@compare.ignore]);
@@ -76,14 +86,10 @@ type t =
 
 and closure =
   | Uclosure of {
-      parameter : pat;
+      parameter : Symbol.t;
       value : t;
       span : (Span.span[@compare.ignore]);
     }
-[@@deriving compare, sexp]
-
-and pat =
-  | Upat_var of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
 [@@deriving compare, sexp]
 
 let default = Uint { value = 0; span = Span.default }
@@ -111,6 +117,9 @@ module Spanned : Span.SPANNED = struct
     | Uop { span; _ } -> span
     | Uneg { span; _ } -> span
     | Uif { span; _ } -> span
+    | Useq { span; _ } -> span
+    | Uassign { span; _ } -> span
+    | Uassign_subscript { span; _ } -> span
 end
 
 module Closure = struct
@@ -120,16 +129,6 @@ module Closure = struct
     type nonrec t = t [@@deriving compare, sexp]
 
     let span = function Uclosure { span; _ } -> span
-  end
-end
-
-module Pattern = struct
-  type nonrec t = pat [@@deriving compare, sexp]
-
-  module Spanned : Span.SPANNED = struct
-    type nonrec t = t [@@deriving compare, sexp]
-
-    let span = function Upat_var { span; _ } -> span
   end
 end
 

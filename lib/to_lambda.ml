@@ -11,7 +11,7 @@ module type MAPPER = sig
   val map_closure :
     is_rec:Symbol.t option -> self -> Tast.Closure.t -> Lambda.Closure.t
 
-  val map_type : self -> Tast.SimpleType.t -> Lambda.Type.t
+  val map_type : self -> Tast.Simple_type.t -> Lambda.Type.t
   val map_primop : self -> Tast.Primop.t -> Lambda.Primop.t
 end
 
@@ -64,6 +64,15 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let index = map_ast self index in
         let type' = map_type self type' in
         Lsubscript { value; index; span; type' }
+    | Tassign { name = name, type'; value; span } ->
+        let value = map_ast self value in
+        let type' = map_type self type' in
+        Lassign { name = (name, type'); value; span }
+    | Tassign_subscript { new_value; index; value; span } ->
+        let new_value = map_ast self new_value in
+        let index = map_ast self index in
+        let value = map_ast self value in
+        Lassign_subscript { new_value; index; value; span }
     | Trecord { fields; span } ->
         let fields =
           List.map fields ~f:(fun (name, t) ->
@@ -86,24 +95,16 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         match Type_env.find self value with
         | None -> failwith "unbound var"
         | Some type' -> Lvar { value; span; type' })
-    | Tlet
-        {
-          pattern = Tpat_var { value = name; span = bind_span; _ };
-          value;
-          app;
-          span;
-        } ->
+    | Tlet { binding = name, type'; value; app; span } ->
         let value = map_ast self value in
-        let type' = Lambda.type_of value in
+        let type' = map_type self type' in
         let self = Type_env.add self ~key:name ~data:type' in
         let app = map_ast self app in
-        Llet
-          {
-            pattern = Lparam { value = name; span = bind_span; type' };
-            value;
-            app;
-            span;
-          }
+        Llet { binding = (name, type'); value; app; span }
+    | Tseq { first; second; span } ->
+        let first = map_ast self first in
+        let second = map_ast self second in
+        Lseq { first; second; span }
     | Tapp { fn; value; type'; span } ->
         let fn = map_ast self fn in
         let value = map_ast self value in
@@ -128,26 +129,19 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         Lif { cond; then_; else_; span; type' }
 
   and map_closure ~is_rec self
-      (Tclosure
-        {
-          parameter = Tpat_var { value; span = bind_span; type' };
-          value = closure_body;
-          span;
-        }) =
+      (Tclosure { parameter = value, type'; value = closure_body; span }) =
     match is_rec with
     | None ->
-        let open Lambda.Bind in
         let type' = map_type self type' in
         let self = Type_env.add self ~key:value ~data:type' in
         let closure_body = map_ast self closure_body in
-        let parameter = Lparam { value; span = bind_span; type' } in
+        let parameter = (value, type') in
         Lclosure { parameter; value = closure_body; span }
     | Some fix ->
-        let open Lambda.Bind in
         let type' = map_type self type' in
         let self = Type_env.add self ~key:value ~data:type' in
         let closure_body = map_ast self closure_body in
-        let parameter = Lparam { value; span = bind_span; type' } in
+        let parameter = (value, type') in
         Lrec_closure { self = fix; parameter; value = closure_body; span }
 
   and map_primop _self =
@@ -186,7 +180,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         (in_process :
           (Polar.Variable.t, Polar.Variable.comparator_witness) Set.t) =
       let open Polar.Type in
-      let open SimpleType in
+      let open Simple_type in
       let open Lambda.Type in
       let open Core in
       match polar with
@@ -199,6 +193,9 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let result = Polar.Type.create result polar in
           Ty_function
             { argument = f argument in_process; result = f result in_process }
+      | PolarType { type' = Smutable { type'; _ }; polar } ->
+          let type' = Polar.Type.create type' polar in
+          Ty_mutable { type' = f type' in_process }
       | PolarType { type' = Ssparse_tuple _; _ } ->
           failwith "sparse tuple not supported yet"
       | PolarType { type' = Stuple_type { first; second; rest }; polar } ->
@@ -328,8 +325,7 @@ module Tests = struct
   let%expect_test "type let function" =
     run_it {| let f x -> 0 in f |};
     [%expect
-      {|
-        (Ty_function(argument(Ty_variable(name(Symbol __0))))(result Ty_int)) |}]
+      {| (Ty_function(argument(Ty_variable(name(Symbol __2))))(result Ty_int)) |}]
 
   let%expect_test "type app" =
     run_it {| let f x -> 0 in f 2 |};
@@ -407,4 +403,45 @@ module Tests = struct
   let%expect_test "vector subscript" =
     run_it "[| 1, 2 |][0]";
     [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
+
+  let%expect_test "let mut" =
+    run_it "let mut x = 1 in x";
+    [%expect {| (Ty_mutable(type' Ty_int)) |}]
+
+  let%expect_test "seq" =
+    run_it "1; 2";
+    [%expect {| Ty_int |}]
+
+  let%expect_test "let mut update" =
+    run_it "let mut a = 0 in a = 1";
+    [%expect {| Ty_unit |}]
+
+  let%expect_test "mut closure" =
+    run_it
+      {|
+      let mut f = fn x -> x in
+      f 0;
+      f = fn x -> x + 1;
+      f 0
+    |};
+    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+
+  let%expect_test "disjoint mut" =
+    run_it
+      {|
+      let mut f = fn x -> x in
+      f 0;
+      f = 7;
+      f 0
+    |};
+    [%expect {| (Ty_variable(name(Symbol __1))) |}]
+
+  let%expect_test "value restriction" =
+    run_it
+      {|
+      let mut c = fn x -> x in
+      c = (fn x -> x + 1);
+      c true
+      |};
+    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
 end

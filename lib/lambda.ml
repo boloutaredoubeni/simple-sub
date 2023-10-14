@@ -15,6 +15,7 @@ module Type = struct
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
+      | Ty_mutable of { type' : t }
       | Ty_int
       | Ty_float
       | Ty_bool
@@ -23,6 +24,7 @@ module Type = struct
     let rec to_string = function
       | Ty_top -> "any"
       | Ty_bottom -> "void"
+      | Ty_mutable { type' } -> "mut " ^ to_string type'
       | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
       | Ty_intersection { lhs; rhs } -> to_string lhs ^ " & " ^ to_string rhs
       | Ty_function { argument; result } ->
@@ -98,6 +100,17 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
+    | Lassign of {
+        name : Symbol.t * Type.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lassign_subscript of {
+        value : t;
+        index : t;
+        new_value : t;
+        span : (Span.span[@compare.ignore]);
+      }
     | Lrecord of {
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
@@ -109,11 +122,12 @@ module rec T : sig
         type' : Type.t;
       }
     | Llet of {
-        pattern : Bind.t;
+        binding : Symbol.t * Type.t;
         value : t;
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Lseq of { first : t; second : t; span : (Span.span[@compare.ignore]) }
     | Ldef of {
         name : Symbol.t;
         fn_type : Type.t;
@@ -177,6 +191,17 @@ end = struct
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
+    | Lassign of {
+        name : Symbol.t * Type.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lassign_subscript of {
+        value : t;
+        index : t;
+        new_value : t;
+        span : (Span.span[@compare.ignore]);
+      }
     | Lrecord of {
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
@@ -188,11 +213,12 @@ end = struct
         type' : Type.t;
       }
     | Llet of {
-        pattern : Bind.t;
+        binding : Symbol.t * Type.t;
         value : t;
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Lseq of { first : t; second : t; span : (Span.span[@compare.ignore]) }
     | Ldef of {
         name : Symbol.t;
         fn_type : Type.t;
@@ -215,7 +241,7 @@ end = struct
     | Lint _ -> Ty_int
     | Lfloat _ -> Ty_float
     | Lbool _ -> Ty_bool
-    | Lunit _ -> Ty_unit
+    | Lunit _ | Lassign _ | Lassign_subscript _ -> Ty_unit
     | Lvar { type'; _ } -> type'
     | Ltuple { first; second; rest; _ } ->
         Ty_tuple
@@ -230,6 +256,7 @@ end = struct
     | Lrecord { fields; _ } ->
         Ty_record { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
     | Llet { app; _ } -> type_of app
+    | Lseq { second; _ } -> type_of second
     | Lselect { type'; _ } -> type'
     | Lapp { type'; _ } -> type'
     | Ldef { app; _ } -> type_of app
@@ -250,9 +277,12 @@ end = struct
       | Lvector { span; _ } -> span
       | Ltuple_subscript { span; _ } -> span
       | Lsubscript { span; _ } -> span
+      | Lassign { span; _ } -> span
+      | Lassign_subscript { span; _ } -> span
       | Lrecord { span; _ } -> span
       | Lselect { span; _ } -> span
       | Llet { span; _ } -> span
+      | Lseq { span; _ } -> span
       | Ldef { span; _ } -> span
       | Lprimop { span; _ } -> span
       | Lif { span; _ } -> span
@@ -262,13 +292,13 @@ end
 and Closure : sig
   type t =
     | Lclosure of {
-        parameter : Bind.t;
+        parameter : Symbol.t * Type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
     | Lrec_closure of {
         self : Symbol.t;
-        parameter : Bind.t;
+        parameter : Symbol.t * Type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
@@ -278,21 +308,21 @@ and Closure : sig
 end = struct
   type t =
     | Lclosure of {
-        parameter : Bind.t;
+        parameter : Symbol.t * Type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
     | Lrec_closure of {
         self : Symbol.t;
-        parameter : Bind.t;
+        parameter : Symbol.t * Type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
 
   let type_of = function
-    | Lclosure { parameter = Lparam { type'; _ }; value; _ }
-    | Lrec_closure { parameter = Lparam { type'; _ }; value; _ } ->
+    | Lclosure { parameter = _, type'; value; _ }
+    | Lrec_closure { parameter = _, type'; value; _ } ->
         Type.Ty_function { argument = type'; result = T.type_of value }
 
   module Spanned : Span.SPANNED = struct
@@ -300,30 +330,6 @@ end = struct
 
     let span = function
       | Lclosure { span; _ } | Lrec_closure { span; _ } -> span
-  end
-end
-
-and Bind : sig
-  type t =
-    | Lparam of {
-        value : Symbol.t;
-        span : (Span.span[@compare.ignore]);
-        type' : Type.t;
-      }
-  [@@deriving compare, sexp]
-end = struct
-  type t =
-    | Lparam of {
-        value : Symbol.t;
-        span : (Span.span[@compare.ignore]);
-        type' : Type.t;
-      }
-  [@@deriving compare, sexp]
-
-  module Spanned : Span.SPANNED = struct
-    type nonrec t = t [@@deriving compare, sexp]
-
-    let span = function Lparam { span; _ } -> span
   end
 end
 

@@ -18,12 +18,25 @@ module Level = struct
   include Comparable.Make (T)
 end
 
-module rec SimpleType : sig
+module Scope = struct
+  module T = struct
+    type t = Scope of { value : int } [@@deriving compare, sexp]
+
+    let default = Scope { value = 0 }
+    let incr (Scope { value }) = Scope { value = value + 1 }
+  end
+
+  include T
+  include Comparable.Make (T)
+end
+
+module rec Simple_type : sig
   type t =
     | Svar_type of { state : Variable.t }
     | Sint_type
     | Sfloat_type
     | Sbool_type
+    | Smutable of { type' : t; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
@@ -39,6 +52,7 @@ end = struct
     | Sint_type
     | Sfloat_type
     | Sbool_type
+    | Smutable of { type' : t; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
@@ -62,6 +76,7 @@ end = struct
     | Srecord { fields } ->
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
+    | Smutable { type'; _ } -> level type'
 end
 
 and Variable : sig
@@ -69,32 +84,32 @@ and Variable : sig
     | VariableState of {
         name : Symbol.t;
         level : Level.t;
-        lower_bounds : SimpleType.t list ref;
-        upper_bounds : SimpleType.t list ref;
+        lower_bounds : Simple_type.t list ref;
+        upper_bounds : Simple_type.t list ref;
       }
   [@@deriving compare, sexp]
 
-  val create : level:Level.t -> fresher:(module FRESH_SYM) -> SimpleType.t
+  val create : level:Level.t -> fresher:(module FRESH_SYM) -> Simple_type.t
   val name : t -> Symbol.t
   val level : t -> Level.t
-  val lower_bounds : t -> SimpleType.t list ref
-  val upper_bounds : t -> SimpleType.t list ref
-  val to_simple_type : t -> SimpleType.t
-  val of_simple_type : SimpleType.t -> t option
+  val lower_bounds : t -> Simple_type.t list ref
+  val upper_bounds : t -> Simple_type.t list ref
+  val to_simple_type : t -> Simple_type.t
+  val of_simple_type : Simple_type.t -> t option
 
   type comparator_witness
 
   val comparator : (t, comparator_witness) Comparator.t
 end = struct
   module T = struct
-    open SimpleType
+    open Simple_type
 
     type t =
       | VariableState of {
           name : Symbol.t;
           level : Level.t;
-          lower_bounds : SimpleType.t list ref;
-          upper_bounds : SimpleType.t list ref;
+          lower_bounds : Simple_type.t list ref;
+          upper_bounds : Simple_type.t list ref;
         }
     [@@deriving compare, sexp]
 
@@ -133,7 +148,7 @@ end = struct
 end
 
 module PolymorhicType = struct
-  type t = PolymorhicType of { level : Level.t; body : SimpleType.t }
+  type t = PolymorhicType of { level : Level.t; body : Simple_type.t }
   [@@deriving compare, sexp]
 
   let create level body = PolymorhicType { level; body }
@@ -148,7 +163,7 @@ module Polar = struct
 
   module Type = struct
     module T = struct
-      type t = PolarType of { type' : SimpleType.t; polar : polarity }
+      type t = PolarType of { type' : Simple_type.t; polar : polarity }
       [@@deriving sexp, compare]
 
       let create type' polar = PolarType { type'; polar }
@@ -157,7 +172,7 @@ module Polar = struct
     include T
     include Comparable.Make (T)
 
-    let level (PolarType { type'; _ }) = SimpleType.level type'
+    let level (PolarType { type'; _ }) = Simple_type.level type'
 
     let not (PolarType { type'; polar }) =
       PolarType { type'; polar = not polar }
@@ -225,19 +240,19 @@ module rec T : sig
     | Tvar of {
         value : Symbol.t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tprimop of {
         op : Primop.t;
         args : t list;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tapp of {
         fn : t;
         value : t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tunit of { span : (Span.span[@compare.ignore]) }
     | Ttuple of {
@@ -249,19 +264,30 @@ module rec T : sig
     | Tvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
-        element : SimpleType.t;
+        element : Simple_type.t;
       }
     | Ttuple_subscript of {
         value : t;
         index : int;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tsubscript of {
         value : t;
         index : t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
+      }
+    | Tassign of {
+        name : Symbol.t * Simple_type.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tassign_subscript of {
+        value : t;
+        index : t;
+        new_value : t;
+        span : (Span.span[@compare.ignore]);
       }
     | Trecord of {
         fields : (Symbol.t * t) list;
@@ -271,18 +297,19 @@ module rec T : sig
         value : t;
         field : Symbol.t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tlet of {
-        pattern : Pattern.t;
+        binding : Symbol.t * Simple_type.t;
         value : t;
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tseq of { first : t; second : t; span : (Span.span[@compare.ignore]) }
     | Tlambda of { closure : Closure.t }
     | Tdef of {
         name : Symbol.t;
-        fn_type : SimpleType.t;
+        fn_type : Simple_type.t;
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);
@@ -292,11 +319,11 @@ module rec T : sig
         then_ : t;
         else_ : t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
   [@@deriving compare, sexp]
 
-  val type_of : t -> SimpleType.t
+  val type_of : t -> Simple_type.t
 end = struct
   type t =
     | Tint of { value : int; span : (Span.span[@compare.ignore]) }
@@ -305,19 +332,19 @@ end = struct
     | Tvar of {
         value : Symbol.t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tprimop of {
         op : Primop.t;
         args : t list;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tapp of {
         fn : t;
         value : t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tunit of { span : (Span.span[@compare.ignore]) }
     | Ttuple of {
@@ -329,19 +356,30 @@ end = struct
     | Tvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
-        element : SimpleType.t;
+        element : Simple_type.t;
       }
     | Ttuple_subscript of {
         value : t;
         index : int;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tsubscript of {
         value : t;
         index : t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
+      }
+    | Tassign of {
+        name : Symbol.t * Simple_type.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tassign_subscript of {
+        value : t;
+        index : t;
+        new_value : t;
+        span : (Span.span[@compare.ignore]);
       }
     | Trecord of {
         fields : (Symbol.t * t) list;
@@ -351,18 +389,19 @@ end = struct
         value : t;
         field : Symbol.t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
     | Tlet of {
-        pattern : Pattern.t;
+        binding : Symbol.t * Simple_type.t;
         value : t;
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tseq of { first : t; second : t; span : (Span.span[@compare.ignore]) }
     | Tlambda of { closure : Closure.t }
     | Tdef of {
         name : Symbol.t;
-        fn_type : SimpleType.t;
+        fn_type : Simple_type.t;
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);
@@ -372,31 +411,33 @@ end = struct
         then_ : t;
         else_ : t;
         span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
+        type' : Simple_type.t;
       }
   [@@deriving compare, sexp]
 
-  let rec type_of = function
-    | Tint _ -> SimpleType.Sint_type
-    | Tfloat _ -> SimpleType.Sfloat_type
-    | Tbool _ -> SimpleType.Sbool_type
+  let rec type_of =
+    let open Simple_type in
+    function
+    | Tint _ -> Sint_type
+    | Tfloat _ -> Sfloat_type
+    | Tbool _ -> Sbool_type
     | Tvar { type'; _ } -> type'
-    | Tunit _ -> SimpleType.Sunit_type
     | Ttuple { first; second; rest; _ } ->
-        SimpleType.Stuple_type
+        Stuple_type
           {
             first = type_of first;
             second = type_of second;
             rest = List.map rest ~f:type_of;
           }
-    | Tvector { element; _ } -> SimpleType.Svector_type { element }
+    | Tvector { element; _ } -> Svector_type { element }
     | Ttuple_subscript { type'; _ } -> type'
     | Tsubscript { type'; _ } -> type'
+    | Tassign _ | Tassign_subscript _ | Tunit _ -> Sunit_type
     | Trecord { fields; _ } ->
-        SimpleType.Srecord
-          { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
+        Srecord { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
     | Tlambda { closure } -> Closure.type_of closure
     | Tlet { app; _ } -> type_of app
+    | Tseq { second; _ } -> type_of second
     | Tselect { type'; _ } -> type'
     | Tapp { type'; _ } -> type'
     | Tdef { app; _ } -> type_of app
@@ -417,9 +458,12 @@ end = struct
       | Tvector { span; _ } -> span
       | Ttuple_subscript { span; _ } -> span
       | Tsubscript { span; _ } -> span
+      | Tassign { span; _ } -> span
+      | Tassign_subscript { span; _ } -> span
       | Trecord { span; _ } -> span
       | Tselect { span; _ } -> span
       | Tlet { span; _ } -> span
+      | Tseq { span; _ } -> span
       | Tlambda { closure = Tclosure { span; _ } } -> span
       | Tdef { span; _ } -> span
       | Tprimop { span; _ } -> span
@@ -430,54 +474,31 @@ end
 and Closure : sig
   type t =
     | Tclosure of {
-        parameter : Pattern.t;
+        parameter : Symbol.t * Simple_type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
 
-  val type_of : t -> SimpleType.t
+  val type_of : t -> Simple_type.t
 end = struct
   type t =
     | Tclosure of {
-        parameter : Pattern.t;
+        parameter : Symbol.t * Simple_type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
 
   let type_of = function
-    | Tclosure { parameter = Tpat_var { type'; _ }; value; _ } ->
-        SimpleType.Sfunction_type { argument = type'; result = T.type_of value }
+    | Tclosure { parameter = _, type'; value; _ } ->
+        Simple_type.Sfunction_type
+          { argument = type'; result = T.type_of value }
 
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
 
     let span = function Tclosure { span; _ } -> span
-  end
-end
-
-and Pattern : sig
-  type t =
-    | Tpat_var of {
-        value : Symbol.t;
-        span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
-      }
-  [@@deriving compare, sexp]
-end = struct
-  type t =
-    | Tpat_var of {
-        value : Symbol.t;
-        span : (Span.span[@compare.ignore]);
-        type' : SimpleType.t;
-      }
-  [@@deriving compare, sexp]
-
-  module Spanned : Span.SPANNED = struct
-    type nonrec t = t [@@deriving compare, sexp]
-
-    let span = function Tpat_var { span; _ } -> span
   end
 end
 
@@ -490,7 +511,7 @@ module Tests = struct
         {
           value = Symbol.of_string "x";
           span = Span.default;
-          type' = SimpleType.Sint_type;
+          type' = Simple_type.Sint_type;
         }
     in
     let right =
@@ -504,7 +525,7 @@ module Tests = struct
                 start = Position.default;
                 finish = Position.default;
               };
-          type' = SimpleType.Sint_type;
+          type' = Simple_type.Sint_type;
         }
     in
     [%test_result: int] (compare left right) ~expect:0

@@ -25,6 +25,7 @@ rule token = parse
 | "if" { IF }
 | "then" { THEN }
 | "else" { ELSE }
+| "mut" { MUT }
 | "=" { EQUAL }
 | "->" { RIGHT_ARROW }
 | "{" { LBRACE }
@@ -48,6 +49,7 @@ rule token = parse
 | "<=" { LESS_EQUAL }
 | ">" { GREATER }
 | ">=" { GREATER_EQUAL }
+| ";" { SEMICOLON }
 | eof { EOF }
 | number { INT (Int.of_string (Lexing.lexeme lexbuf)) }
 | decimal { FLOAT (Float.of_string (Lexing.lexeme lexbuf)) }
