@@ -46,6 +46,7 @@ module rec Simple_type : sig
   [@@deriving compare, sexp]
 
   val level : t -> Level.t
+  val deref : t -> t
 end = struct
   type t =
     | Svar_type of { state : Variable.t }
@@ -77,6 +78,10 @@ end = struct
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
     | Smutable { type'; _ } -> level type'
+
+  let rec deref = function
+    | Smutable { type'; _ } -> deref type'
+    | type' -> type'
 end
 
 and Variable : sig
@@ -314,12 +319,24 @@ module rec T : sig
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tif_end of {
+        cond : t;
+        then_ : t;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
     | Tif of {
         cond : t;
         then_ : t;
         else_ : t;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
+      }
+    | Tfor of {
+        iterate : Iterate.t;
+        body : t;
+        type' : Simple_type.t;
+        span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
 
@@ -406,12 +423,24 @@ end = struct
         app : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tif_end of {
+        cond : t;
+        then_ : t;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
     | Tif of {
         cond : t;
         then_ : t;
         else_ : t;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
+      }
+    | Tfor of {
+        iterate : Iterate.t;
+        body : t;
+        type' : Simple_type.t;
+        span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
 
@@ -430,44 +459,48 @@ end = struct
             rest = List.map rest ~f:type_of;
           }
     | Tvector { element; _ } -> Svector_type { element }
-    | Ttuple_subscript { type'; _ } -> type'
-    | Tsubscript { type'; _ } -> type'
+    | Ttuple_subscript { type'; _ } | Tsubscript { type'; _ } -> type'
     | Tassign _ | Tassign_subscript _ | Tunit _ -> Sunit_type
     | Trecord { fields; _ } ->
         Srecord { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
     | Tlambda { closure } -> Closure.type_of closure
     | Tlet { app; _ } -> type_of app
     | Tseq { second; _ } -> type_of second
-    | Tselect { type'; _ } -> type'
-    | Tapp { type'; _ } -> type'
+    | Tselect { type'; _ } | Tapp { type'; _ } -> type'
     | Tdef { app; _ } -> type_of app
-    | Tprimop { type'; _ } -> type'
-    | Tif { type'; _ } -> type'
+    | Tprimop { type'; _ }
+    | Tif { type'; _ }
+    | Tif_end { type'; _ }
+    | Tfor { type'; _ } ->
+        type'
 
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
 
     let span = function
-      | Tint { span; _ } -> span
-      | Tbool { span; _ } -> span
-      | Tfloat { span; _ } -> span
-      | Tvar { span; _ } -> span
-      | Tapp { span; _ } -> span
-      | Tunit { span; _ } -> span
-      | Ttuple { span; _ } -> span
-      | Tvector { span; _ } -> span
-      | Ttuple_subscript { span; _ } -> span
-      | Tsubscript { span; _ } -> span
-      | Tassign { span; _ } -> span
-      | Tassign_subscript { span; _ } -> span
-      | Trecord { span; _ } -> span
-      | Tselect { span; _ } -> span
-      | Tlet { span; _ } -> span
-      | Tseq { span; _ } -> span
-      | Tlambda { closure = Tclosure { span; _ } } -> span
-      | Tdef { span; _ } -> span
-      | Tprimop { span; _ } -> span
-      | Tif { span; _ } -> span
+      | Tint { span; _ }
+      | Tbool { span; _ }
+      | Tfloat { span; _ }
+      | Tvar { span; _ }
+      | Tapp { span; _ }
+      | Tunit { span; _ }
+      | Ttuple { span; _ }
+      | Tvector { span; _ }
+      | Ttuple_subscript { span; _ }
+      | Tsubscript { span; _ }
+      | Tassign { span; _ }
+      | Tassign_subscript { span; _ }
+      | Trecord { span; _ }
+      | Tselect { span; _ }
+      | Tlet { span; _ }
+      | Tseq { span; _ }
+      | Tlambda { closure = Tclosure { span; _ } }
+      | Tdef { span; _ }
+      | Tprimop { span; _ }
+      | Tif_end { span; _ }
+      | Tfor { span; _ }
+      | Tif { span; _ } ->
+          span
   end
 end
 
@@ -500,6 +533,32 @@ end = struct
 
     let span = function Tclosure { span; _ } -> span
   end
+end
+
+and Iterate : sig
+  type t =
+    | Titerate of {
+        name : Symbol.t * Simple_type.t;
+        start : T.t;
+        finish : T.t;
+        is_ascending : bool;
+        rest : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tdone
+  [@@deriving compare, sexp]
+end = struct
+  type t =
+    | Titerate of {
+        name : Symbol.t * Simple_type.t;
+        start : T.t;
+        finish : T.t;
+        is_ascending : bool;
+        rest : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tdone
+  [@@deriving compare, sexp]
 end
 
 module Tests = struct

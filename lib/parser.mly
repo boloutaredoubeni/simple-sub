@@ -7,15 +7,18 @@
 %token <float> FLOAT
 %token <Text.Symbol.t> IDENT
 %token LET MUT
-%token EQUAL RIGHT_ARROW
+%token EQUAL 
+%token LEFT_ARROW RIGHT_ARROW
 %token IN
 %token DEF FN
 %token DOT
+%token TO DOWNTO
 %token LBRACE RBRACE
 %token LPAREN RPAREN
 %token LBRACKET RBRACKET
 %token LBRACKET_BAR RBRACKET_BAR
 %token TRUE FALSE
+%token FOR DO END
 %token IF THEN ELSE
 %token COMMA
 %token SEMICOLON
@@ -63,6 +66,22 @@ expr
     | left = expr LESS_EQUAL right = expr { Uop { op=Op.Leq; left; right; span=Span.create $sloc } }
     | left = expr GREATER_EQUAL right = expr { Uop { op=Op.Geq; left; right; span=Span.create $sloc } }
     | left = expr NOT_EQUAL right = expr { Uop { op=Op.Neq; left; right; span=Span.create $sloc } }
+    | FOR iterates = iterates DO body = expr END { 
+        let rec to_iterates = function
+            | [] -> Udone
+            | (name, start, is_ascending, finish, span) :: iterates -> 
+                Uiterate { 
+                    name; 
+                    start; 
+                    is_ascending; 
+                    finish; 
+                    rest = to_iterates iterates; 
+                    span 
+                } in
+        let iterates = to_iterates iterates in
+        Ufor { iterates; body; span=Span.create $sloc } 
+    }
+    | IF cond = expr THEN then_ = expr END { Uif_end { cond; then_; span=Span.create $sloc } }
     | IF cond = expr THEN then_ = expr ELSE else_ = expr { Uif { cond; then_; else_; span=Span.create $sloc } }
     | first = expr SEMICOLON second = expr { Useq { first; second; span=Span.create $sloc } }
     | LET binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; is_mutable=false; value; app; span=Span.create $sloc } }
@@ -100,8 +119,15 @@ record_fields
     : fields = separated_nonempty_list(COMMA, record_field) { fields }
 
 record_field
-(* TODO mutable records, maybe be an alternative to refs btw *)
     : field = IDENT EQUAL value = expr { (field, value) }
 
 elements
     : separated_list(COMMA, expr) { $1 }
+
+iterate
+(* TODO: these can be condensed *)
+    : name = IDENT LEFT_ARROW start = expr TO finish = expr  { (name, start, true, finish, Span.create $sloc)  }
+    | name = IDENT LEFT_ARROW start = expr DOWNTO finish = expr { (name, start, false, finish, Span.create $sloc)  }
+
+iterates
+    : iterates = separated_list(COMMA, iterate) { iterates }

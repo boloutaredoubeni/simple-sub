@@ -114,6 +114,11 @@ module Tests = struct
     [%expect
       {| (Uop(op Mul)(left(Utuple(values((Uop(op Add)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2)))))))(right(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 5)))(finish(Position(line 1)(column 6)))))))(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 6))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 7)))))))(right(Uint(value 3)(span(Span(filename"")(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 11)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 11)))))) |}]
 
+  let%expect_test "if end" =
+    run_it "if 1 < 2 then 2 end";
+    [%expect
+      {| (Uif_end(cond(Uop(op Lt)(left(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))(right(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8)))))))(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 8)))))))(then_(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 14)))(finish(Position(line 1)(column 15)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 19)))))) |}]
+
   let%expect_test "if" =
     run_it "if 1 < 2 then 2 else 3";
     [%expect
@@ -188,4 +193,58 @@ module Tests = struct
     run_it "let mut a = 0 in a = 1";
     [%expect
       {| (Ulet(binding(Symbol a))(is_mutable true)(value(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 12)))(finish(Position(line 1)(column 13)))))))(app(Uassign(name(Symbol a))(value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 21)))(finish(Position(line 1)(column 22)))))))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 22)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 22)))))) |}]
+
+  let%expect_test "forever" =
+    run_it {| for do () end |};
+    [%expect
+      {| (Ufor(iterates Udone)(body(Utuple(values())(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 10)))))))(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 14)))))) |}]
+
+  let%expect_test "counter loop" =
+    run_it
+      {| 
+      let mut i = 0 in
+      for do
+        i = i + 1
+      end;
+      i
+    |};
+    [%expect
+      {| (Ulet(binding(Symbol i))(is_mutable true)(value(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 20)))(finish(Position(line 1)(column 21)))))))(app(Useq(first(Ufor(iterates Udone)(body(Uassign(name(Symbol i))(value(Uop(op Add)(left(Uvar(value(Symbol i))(span(Span(filename"")(start(Position(line 1)(column 50)))(finish(Position(line 1)(column 51)))))))(right(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 54)))(finish(Position(line 1)(column 55)))))))(span(Span(filename"")(start(Position(line 1)(column 50)))(finish(Position(line 1)(column 55)))))))(span(Span(filename"")(start(Position(line 1)(column 46)))(finish(Position(line 1)(column 55)))))))(span(Span(filename"")(start(Position(line 1)(column 31)))(finish(Position(line 1)(column 65)))))))(second(Uvar(value(Symbol i))(span(Span(filename"")(start(Position(line 1)(column 73)))(finish(Position(line 1)(column 74)))))))(span(Span(filename"")(start(Position(line 1)(column 31)))(finish(Position(line 1)(column 74)))))))(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 74)))))) |}]
+
+  let%expect_test "for range" =
+    run_it
+      {| 
+        let f x -> () in
+        for i <- 0 to 10 do
+          f i
+        end
+        |};
+    [%expect
+      {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Utuple(values())(span(Span(filename"")(start(Position(line 1)(column 21)))(finish(Position(line 1)(column 23)))))))(span(Span(filename"")(start(Position(line 1)(column 14)))(finish(Position(line 1)(column 21)))))))(app(Ufor(iterates(Uiterate(name(Symbol i))(start(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 44)))(finish(Position(line 1)(column 45)))))))(finish(Uint(value 10)(span(Span(filename"")(start(Position(line 1)(column 49)))(finish(Position(line 1)(column 51)))))))(is_ascending true)(span(Span(filename"")(start(Position(line 1)(column 39)))(finish(Position(line 1)(column 51)))))(rest Udone)))(body(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename"")(start(Position(line 1)(column 65)))(finish(Position(line 1)(column 66)))))))(value(Uvar(value(Symbol i))(span(Span(filename"")(start(Position(line 1)(column 67)))(finish(Position(line 1)(column 68)))))))(span(Span(filename"")(start(Position(line 1)(column 65)))(finish(Position(line 1)(column 68)))))))(span(Span(filename"")(start(Position(line 1)(column 35)))(finish(Position(line 1)(column 80)))))))(span(Span(filename"")(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 80)))))) |}]
+
+  let%expect_test "for nested loop" =
+    run_it
+      {| 
+        for 
+          i <- 0 to 10,
+          j <- 0 to 10
+        do
+          let x = i + j in
+          ()
+        end
+        |};
+    [%expect
+      {| (Ufor(iterates(Uiterate(name(Symbol i))(start(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 30)))(finish(Position(line 1)(column 31)))))))(finish(Uint(value 10)(span(Span(filename"")(start(Position(line 1)(column 35)))(finish(Position(line 1)(column 37)))))))(is_ascending true)(span(Span(filename"")(start(Position(line 1)(column 25)))(finish(Position(line 1)(column 37)))))(rest(Uiterate(name(Symbol j))(start(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 54)))(finish(Position(line 1)(column 55)))))))(finish(Uint(value 10)(span(Span(filename"")(start(Position(line 1)(column 59)))(finish(Position(line 1)(column 61)))))))(is_ascending true)(span(Span(filename"")(start(Position(line 1)(column 49)))(finish(Position(line 1)(column 61)))))(rest Udone)))))(body(Ulet(binding(Symbol x))(is_mutable false)(value(Uop(op Add)(left(Uvar(value(Symbol i))(span(Span(filename"")(start(Position(line 1)(column 91)))(finish(Position(line 1)(column 92)))))))(right(Uvar(value(Symbol j))(span(Span(filename"")(start(Position(line 1)(column 95)))(finish(Position(line 1)(column 96)))))))(span(Span(filename"")(start(Position(line 1)(column 91)))(finish(Position(line 1)(column 96)))))))(app(Utuple(values())(span(Span(filename"")(start(Position(line 1)(column 110)))(finish(Position(line 1)(column 112)))))))(span(Span(filename"")(start(Position(line 1)(column 83)))(finish(Position(line 1)(column 112)))))))(span(Span(filename"")(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 124)))))) |}]
+
+  let%expect_test "for decreasing loop" =
+    run_it
+      {| 
+        for 
+          i <- 0 downto 10
+        do
+          ()
+        end
+        |};
+    [%expect
+      {| (Ufor(iterates(Uiterate(name(Symbol i))(start(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 30)))(finish(Position(line 1)(column 31)))))))(finish(Uint(value 10)(span(Span(filename"")(start(Position(line 1)(column 39)))(finish(Position(line 1)(column 41)))))))(is_ascending false)(span(Span(filename"")(start(Position(line 1)(column 25)))(finish(Position(line 1)(column 41)))))(rest Udone)))(body(Utuple(values())(span(Span(filename"")(start(Position(line 1)(column 63)))(finish(Position(line 1)(column 65)))))))(span(Span(filename"")(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 77)))))) |}]
 end

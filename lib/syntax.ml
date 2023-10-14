@@ -7,9 +7,9 @@ module Op = struct
 end
 
 (*
-   TODO: tuple pattern,  mut, for loop, extern
-   TODO: part 2. cubiml i.e. tags/pattern matching, tuple patterns, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
-   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting
+   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
+   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting, iterators, break, contnue, return, yield, mutable vs immutable strings
+   TODO: delimited ir
    TODO: ownership based reference counting
    TODO: compilation to WASM and/or LLVM
 *)
@@ -76,10 +76,16 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Ulambda of { closure : closure }
+  | Uif_end of { cond : t; then_ : t; span : (Span.span[@compare.ignore]) }
   | Uif of {
       cond : t;
       then_ : t;
       else_ : t;
+      span : (Span.span[@compare.ignore]);
+    }
+  | Ufor of {
+      iterates : iterate;
+      body : t;
       span : (Span.span[@compare.ignore]);
     }
 [@@deriving compare, sexp]
@@ -92,6 +98,18 @@ and closure =
     }
 [@@deriving compare, sexp]
 
+and iterate =
+  | Uiterate of {
+      name : Symbol.t;
+      start : t;
+      finish : t;
+      is_ascending : bool;
+      span : (Span.span[@compare.ignore]);
+      rest : iterate;
+    }
+  | Udone
+[@@deriving compare, sexp]
+
 let default = Uint { value = 0; span = Span.default }
 let to_sexp_string t = Sexp.to_string (sexp_of_t t)
 
@@ -99,27 +117,30 @@ module Spanned : Span.SPANNED = struct
   type nonrec t = t [@@deriving compare, sexp]
 
   let span = function
-    | Uint { span; _ } -> span
-    | Ubool { span; _ } -> span
-    | Ufloat { span; _ } -> span
-    | Uvar { span; _ } -> span
-    | Uapp { span; _ } -> span
-    | Urecord { span; _ } -> span
-    | Utuple { span; _ } -> span
-    | Uvector { span; _ } -> span
-    | Utuple_subscript { span; _ } -> span
-    | Usubscript { span; _ } -> span
-    | Uselect { span; _ } -> span
-    | Ulet { span; _ } -> span
-    | Ulet_fun { span; _ } -> span
-    | Ulambda { closure = Uclosure { span; _ }; _ } -> span
-    | Udef { span; _ } -> span
-    | Uop { span; _ } -> span
-    | Uneg { span; _ } -> span
-    | Uif { span; _ } -> span
-    | Useq { span; _ } -> span
-    | Uassign { span; _ } -> span
-    | Uassign_subscript { span; _ } -> span
+    | Uint { span; _ }
+    | Ubool { span; _ }
+    | Ufloat { span; _ }
+    | Uvar { span; _ }
+    | Uapp { span; _ }
+    | Urecord { span; _ }
+    | Utuple { span; _ }
+    | Uvector { span; _ }
+    | Utuple_subscript { span; _ }
+    | Usubscript { span; _ }
+    | Uselect { span; _ }
+    | Ulet { span; _ }
+    | Ulet_fun { span; _ }
+    | Ulambda { closure = Uclosure { span; _ }; _ }
+    | Udef { span; _ }
+    | Uop { span; _ }
+    | Uneg { span; _ }
+    | Uif_end { span; _ }
+    | Ufor { span; _ }
+    | Uif { span; _ }
+    | Useq { span; _ }
+    | Uassign { span; _ }
+    | Uassign_subscript { span; _ } ->
+        span
 end
 
 module Closure = struct

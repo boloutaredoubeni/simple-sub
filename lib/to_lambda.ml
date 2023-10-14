@@ -13,6 +13,7 @@ module type MAPPER = sig
 
   val map_type : self -> Tast.Simple_type.t -> Lambda.Type.t
   val map_primop : self -> Tast.Primop.t -> Lambda.Primop.t
+  val map_iterate : self -> Tast.Iterate.t -> self * Lambda.Iterate.t
 end
 
 module Type_env = struct
@@ -121,12 +122,40 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let closure = map_closure ~is_rec:(Some name) self closure in
         let app = map_ast self app in
         Ldef { name; closure; span; app; fn_type }
+    | Tif_end { cond; then_; type'; span } ->
+        let cond = map_ast self cond in
+        let then_ = map_ast self then_ in
+        let type' = map_type self type' in
+        let else_ = Lunit { span } in
+        Lif { cond; then_; else_; span; type' }
     | Tif { cond; then_; else_; span; type' } ->
         let cond = map_ast self cond in
         let then_ = map_ast self then_ in
         let else_ = map_ast self else_ in
         let type' = map_type self type' in
         Lif { cond; then_; else_; span; type' }
+    | Tfor { iterate; body; span; type' } ->
+        let self, iterate = map_iterate self iterate in
+        let body = map_ast self body in
+        let type' = map_type self type' in
+        Lfor { iterate; body; span; type' }
+
+  and map_iterate self iterate =
+    let rec loop self iter =
+      let open Tast.Iterate in
+      let open Lambda.Iterate in
+      match iter with
+      | Tdone -> (self, Ldone)
+      | Titerate { name = name, type'; start; finish; is_ascending; span; rest }
+        ->
+          let start = map_ast self start in
+          let finish = map_ast self finish in
+          let type' = map_type self type' in
+          let self = Type_env.add self ~key:name ~data:type' in
+          let self, rest = loop self rest in
+          (self, Literate { name; start; finish; is_ascending; span; rest })
+    in
+    loop self iterate
 
   and map_closure ~is_rec self
       (Tclosure { parameter = value, type'; value = closure_body; span }) =
@@ -356,6 +385,10 @@ module Tests = struct
     run_it "(1 + 2) * 3";
     [%expect {| Ty_int |}]
 
+  let%expect_test "if end" =
+    run_it "if 1 < 2 then () end";
+    [%expect {| Ty_unit |}]
+
   let%expect_test "if" =
     run_it "if true then 1 else 0";
     [%expect
@@ -444,4 +477,53 @@ module Tests = struct
       c true
       |};
     [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+
+  let%expect_test "forever" =
+    run_it {| for do () end |};
+    [%expect {| Ty_unit |}]
+
+  let%expect_test "counter loop" =
+    run_it
+      {| 
+      let mut i = 0 in
+      for do
+        i = i + 1
+      end;
+      i
+    |};
+    [%expect {| (Ty_mutable(type' Ty_int)) |}]
+
+  let%expect_test "for range" =
+    run_it
+      {| 
+        let f x -> () in
+        for i <- 0 to 10 do
+          f i
+        end
+        |};
+    [%expect {| Ty_unit |}]
+
+  let%expect_test "for nested loop" =
+    run_it
+      {| 
+        for 
+          i <- 0 to 10,
+          j <- 0 to 10
+        do
+          let x = i + j in
+          ()
+        end
+        |};
+    [%expect {| Ty_unit |}]
+
+  let%expect_test "for decreasing loop" =
+    run_it
+      {| 
+        for 
+          i <- 0 downto 10
+        do
+          ()
+        end
+        |};
+    [%expect {| Ty_unit |}]
 end

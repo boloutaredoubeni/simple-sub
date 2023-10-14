@@ -26,7 +26,13 @@ rule token = parse
 | "then" { THEN }
 | "else" { ELSE }
 | "mut" { MUT }
+| "for" { FOR }
+| "do"  { DO }
+| "to" { TO }
+| "downto" { DOWNTO }
+| "end" { END }
 | "=" { EQUAL }
+| "<-" { LEFT_ARROW }
 | "->" { RIGHT_ARROW }
 | "{" { LBRACE }
 | "}" { RBRACE }

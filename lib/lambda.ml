@@ -142,6 +142,12 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
+    | Lfor of {
+        iterate : Iterate.t;
+        body : t;
+        type' : Type.t;
+        span : (Span.span[@compare.ignore]);
+      }
   [@@deriving compare, sexp]
 
   val type_of : t -> Type.t
@@ -233,6 +239,12 @@ end = struct
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
+    | Lfor of {
+        iterate : Iterate.t;
+        body : t;
+        type' : Type.t;
+        span : (Span.span[@compare.ignore]);
+      }
   [@@deriving compare, sexp]
 
   let rec type_of =
@@ -262,30 +274,33 @@ end = struct
     | Ldef { app; _ } -> type_of app
     | Lprimop { type'; _ } -> type'
     | Lif { type'; _ } -> type'
+    | Lfor { type'; _ } -> type'
 
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
 
     let span = function
-      | Lint { span; _ } -> span
-      | Lfloat { span; _ } -> span
-      | Lbool { span; _ } -> span
-      | Lunit { span; _ } -> span
-      | Lvar { span; _ } -> span
-      | Lapp { span; _ } -> span
-      | Ltuple { span; _ } -> span
-      | Lvector { span; _ } -> span
-      | Ltuple_subscript { span; _ } -> span
-      | Lsubscript { span; _ } -> span
-      | Lassign { span; _ } -> span
-      | Lassign_subscript { span; _ } -> span
-      | Lrecord { span; _ } -> span
-      | Lselect { span; _ } -> span
-      | Llet { span; _ } -> span
-      | Lseq { span; _ } -> span
-      | Ldef { span; _ } -> span
-      | Lprimop { span; _ } -> span
-      | Lif { span; _ } -> span
+      | Lint { span; _ }
+      | Lfloat { span; _ }
+      | Lbool { span; _ }
+      | Lunit { span; _ }
+      | Lvar { span; _ }
+      | Lapp { span; _ }
+      | Ltuple { span; _ }
+      | Lvector { span; _ }
+      | Ltuple_subscript { span; _ }
+      | Lsubscript { span; _ }
+      | Lassign { span; _ }
+      | Lassign_subscript { span; _ }
+      | Lrecord { span; _ }
+      | Lselect { span; _ }
+      | Llet { span; _ }
+      | Lseq { span; _ }
+      | Ldef { span; _ }
+      | Lprimop { span; _ }
+      | Lif { span; _ }
+      | Lfor { span; _ } ->
+          span
   end
 end
 
@@ -386,6 +401,32 @@ end = struct
     | Lfloat_ge
     | Lbool_eq
     | Lbool_neq
+  [@@deriving compare, sexp]
+end
+
+and Iterate : sig
+  type t =
+    | Literate of {
+        name : Symbol.t;
+        start : T.t;
+        finish : T.t;
+        is_ascending : bool;
+        rest : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Ldone
+  [@@deriving compare, sexp]
+end = struct
+  type t =
+    | Literate of {
+        name : Symbol.t;
+        start : T.t;
+        finish : T.t;
+        is_ascending : bool;
+        rest : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Ldone
   [@@deriving compare, sexp]
 end
 

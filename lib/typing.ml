@@ -379,6 +379,7 @@ module type MAPPER = sig
   val map : Syntax.t -> Tast.t Or_error.t
   val map_ast : self -> Syntax.t -> Tast.t
   val map_closure : self -> Syntax.Closure.t -> Closure.t
+  val map_iterate : self -> Syntax.iterate -> self * Tast.Iterate.t
 end
 
 module type S = sig
@@ -456,7 +457,9 @@ functor
           let op =
             let open Primop in
             let lhs = Tast.T.type_of left in
+            let lhs = Simple_type.deref lhs in
             let rhs = Tast.T.type_of right in
+            let rhs = Simple_type.deref rhs in
             match (int_op, lhs, rhs) with
             | Add, Sint_type, Sint_type -> Tint_add
             | Sub, Sint_type, Sint_type -> Tint_sub
@@ -632,6 +635,12 @@ functor
             (Simple_type.Sfunction_type
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
+      | Uif_end { cond; then_; span } ->
+          let cond = map_ast self cond in
+          constrain (Tast.T.type_of cond) Sbool_type;
+          let then_ = map_ast self then_ in
+          constrain (Tast.T.type_of then_) Sunit_type;
+          Tif_end { cond; then_; span; type' = Sunit_type }
       | Uif { cond; then_; else_; span } ->
           let cond = map_ast self cond in
           constrain (Tast.T.type_of cond) Sbool_type;
@@ -644,6 +653,40 @@ functor
           let else_ = map_ast self else_ in
           constrain (Tast.T.type_of else_) type';
           Tif { cond; then_; else_; span; type' }
+      | Ufor { iterates; body; span } ->
+          let self, iterate = map_iterate self iterates in
+          let body = map_ast self body in
+          constrain (Tast.T.type_of body) Sunit_type;
+          Tfor { iterate; body; span; type' = Sunit_type }
+
+    and map_iterate self iterate =
+      let rec loop self iter =
+        let open Syntax in
+        let open Tast.Iterate in
+        match iter with
+        | Udone -> (self, Tdone)
+        | Uiterate { name; start; finish; is_ascending; span; rest } ->
+            let start = map_ast (Self.level_up self) start in
+            constrain (Tast.T.type_of start) Sint_type;
+            let finish = map_ast (Self.level_up self) finish in
+            constrain (Tast.T.type_of finish) Sint_type;
+            let type' = PolymorhicType.create (Self.level self) Sint_type in
+            let scheme = TypeScheme.of_polymorphic_type type' in
+            let self = Self.add self ~key:name ~data:scheme in
+            let self, rest = loop self rest in
+            let type' = TypeScheme.instantiate scheme (Self.level self) in
+            ( self,
+              Titerate
+                {
+                  name = (name, type');
+                  start;
+                  finish;
+                  is_ascending;
+                  span;
+                  rest;
+                } )
+      in
+      loop self iterate
 
     and map_closure self (Syntax.Uclosure { parameter; value; span }) =
       let self = Self.incr_scope self in
@@ -781,6 +824,10 @@ module Tests = struct
     run_it "true == false";
     [%expect {| Sbool_type |}]
 
+  let%expect_test "if end" =
+    run_it "if 1 < 2 then () end";
+    [%expect {| Sunit_type |}]
+
   let%expect_test "if" =
     run_it "if true then 1 else 0";
     [%expect
@@ -889,4 +936,53 @@ module Tests = struct
       c true
       |};
     [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+
+  let%expect_test "forever" =
+    run_it {| for do () end |};
+    [%expect {| Sunit_type |}]
+
+  let%expect_test "counter loop" =
+    run_it
+      {| 
+      let mut i = 0 in
+      for do
+        i = i + 1
+      end;
+      i
+    |};
+    [%expect {| (Smutable(type' Sint_type)(scope(Scope(value 0)))) |}]
+
+  let%expect_test "for range" =
+    run_it
+      {| 
+        let f x -> () in
+        for i <- 0 to 10 do
+          f i
+        end
+        |};
+    [%expect {| Sunit_type |}]
+
+  let%expect_test "for nested loop" =
+    run_it
+      {| 
+        for 
+          i <- 0 to 10,
+          j <- 0 to 10
+        do
+          let x = i + j in
+          ()
+        end
+        |};
+    [%expect {| Sunit_type |}]
+
+  let%expect_test "for decreasing loop" =
+    run_it
+      {| 
+        for 
+          i <- 0 downto 10
+        do
+          ()
+        end
+        |};
+    [%expect {| Sunit_type |}]
 end
