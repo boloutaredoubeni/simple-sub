@@ -46,11 +46,19 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tfloat { value; span } -> Lfloat { value; span }
     | Tbool { value; span } -> Lbool { value; span }
     | Tunit { span } -> Lunit { span }
+    | Tvector { values; span; element } ->
+        let values = List.map values ~f:(map_ast self) in
+        let element = map_type self element in
+        Lvector { values; span; element }
     | Ttuple { first; second; rest; span } ->
         let first = map_ast self first in
         let second = map_ast self second in
         let rest = List.map rest ~f:(map_ast self) in
         Ltuple { first; second; rest; span }
+    | Ttuple_subscript { value; index; span; type' } ->
+        let value = map_ast self value in
+        let type' = map_type self type' in
+        Ltuple_subscript { value; index; span; type' }
     | Tsubscript { value; index; span; type' } ->
         let value = map_ast self value in
         let index = map_ast self index in
@@ -191,6 +199,8 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let result = Polar.Type.create result polar in
           Ty_function
             { argument = f argument in_process; result = f result in_process }
+      | PolarType { type' = Ssparse_tuple _; _ } ->
+          failwith "sparse tuple not supported yet"
       | PolarType { type' = Stuple_type { first; second; rest }; polar } ->
           let first = Polar.Type.create first polar in
           let second = Polar.Type.create second polar in
@@ -199,6 +209,9 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let second = f second in_process in
           let rest = List.map rest ~f:(fun t -> f t in_process) in
           Ty_tuple { first; second; rest }
+      | PolarType { type' = Svector_type { element }; polar } ->
+          let element = Polar.Type.create element polar in
+          Ty_vector { element = f element in_process }
       | PolarType { type' = Srecord { fields }; polar } ->
           let fields =
             List.map fields ~f:(fun (name, t) ->
@@ -370,6 +383,28 @@ module Tests = struct
     [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
 
   let%expect_test "tuple index" =
-    run_it "(1, 2)[0]";
+    run_it "(1, 2).0";
     [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
+
+  let%expect_test "triple index" =
+    run_it "(1, 2, true).2";
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)) |}]
+
+  let%expect_test "empty vector" =
+    run_it "[||]";
+    [%expect {| (Ty_vector(element(Ty_variable(name(Symbol __0))))) |}]
+
+  let%expect_test "vector" =
+    run_it "[| 1, 2 |]";
+    [%expect
+      {| (Ty_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)))) |}]
+
+  let%expect_test "heterogeneous vector" =
+    run_it "[| 1, true |]";
+    [%expect
+      {| (Ty_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)))(rhs Ty_int)))) |}]
+
+  let%expect_test "vector subscript" =
+    run_it "[| 1, 2 |][0]";
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
 end

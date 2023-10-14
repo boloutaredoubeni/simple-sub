@@ -7,7 +7,14 @@ module Op = struct
 end
 
 (*
-   TODO: tuples/unit, arrays, mut, for loop
+   DONE: simple-sub demo
+   DONE: 
+   TODO: let-tuple/unit, arrays, mut, for loop, extern
+   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
+   TODO: suspend/resume continuations
+   TODO: continuation based concurrency, interfaces, error/exceptions, tensors
+   TODO: ownership based reference counting
+   TODO: compilation to WASM and/or LLVM
 *)
 
 type t =
@@ -24,6 +31,12 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Utuple of { values : t list; span : (Span.span[@compare.ignore]) }
+  | Uvector of { values : t list; span : (Span.span[@compare.ignore]) }
+  | Utuple_subscript of {
+      value : t;
+      index : int;
+      span : (Span.span[@compare.ignore]);
+    }
   | Usubscript of { value : t; index : t; span : (Span.span[@compare.ignore]) }
   | Urecord of {
       fields : (Symbol.t * t) list;
@@ -87,6 +100,8 @@ module Spanned : Span.SPANNED = struct
     | Uapp { span; _ } -> span
     | Urecord { span; _ } -> span
     | Utuple { span; _ } -> span
+    | Uvector { span; _ } -> span
+    | Utuple_subscript { span; _ } -> span
     | Usubscript { span; _ } -> span
     | Uselect { span; _ } -> span
     | Ulet { span; _ } -> span

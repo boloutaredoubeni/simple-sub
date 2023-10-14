@@ -26,7 +26,9 @@ module rec SimpleType : sig
     | Sbool_type
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
+    | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
+    | Svector_type of { element : t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -39,7 +41,9 @@ end = struct
     | Sbool_type
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
+    | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
+    | Svector_type of { element : t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -48,9 +52,13 @@ end = struct
         Level.max (level argument) (level result)
     | Svar_type { state = VariableState { level; _ } } -> level
     | Sint_type | Sbool_type | Sfloat_type | Sunit_type -> Level.default
+    | Ssparse_tuple { indices } ->
+        List.fold indices ~init:Level.default ~f:(fun acc (_, t) ->
+            Level.max acc (level t))
     | Stuple_type { first; second; rest } ->
         List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
             Level.max acc (level t))
+    | Svector_type { element } -> level element
     | Srecord { fields } ->
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
@@ -238,6 +246,17 @@ module rec T : sig
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
+    | Tvector of {
+        values : t list;
+        span : (Span.span[@compare.ignore]);
+        element : SimpleType.t;
+      }
+    | Ttuple_subscript of {
+        value : t;
+        index : int;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
     | Tsubscript of {
         value : t;
         index : t;
@@ -307,6 +326,17 @@ end = struct
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
+    | Tvector of {
+        values : t list;
+        span : (Span.span[@compare.ignore]);
+        element : SimpleType.t;
+      }
+    | Ttuple_subscript of {
+        value : t;
+        index : int;
+        span : (Span.span[@compare.ignore]);
+        type' : SimpleType.t;
+      }
     | Tsubscript of {
         value : t;
         index : t;
@@ -359,6 +389,8 @@ end = struct
             second = type_of second;
             rest = List.map rest ~f:type_of;
           }
+    | Tvector { element; _ } -> SimpleType.Svector_type { element }
+    | Ttuple_subscript { type'; _ } -> type'
     | Tsubscript { type'; _ } -> type'
     | Trecord { fields; _ } ->
         SimpleType.Srecord
@@ -382,6 +414,8 @@ end = struct
       | Tapp { span; _ } -> span
       | Tunit { span; _ } -> span
       | Ttuple { span; _ } -> span
+      | Tvector { span; _ } -> span
+      | Ttuple_subscript { span; _ } -> span
       | Tsubscript { span; _ } -> span
       | Trecord { span; _ } -> span
       | Tselect { span; _ } -> span

@@ -31,10 +31,13 @@ rule token = parse
 | "}" { RBRACE }
 | "(" { LPAREN }
 | ")" { RPAREN }
+| "[|" { LBRACKET_BAR }
+| "|]" { RBRACKET_BAR }
 | "[" { LBRACKET }
 | "]" { RBRACKET }
 | "." { DOT }
 | "," { COMMA }
+(* FIXME: these operators are for INTEGER math, use dot operators for floats *)
 | "+" { PLUS }
 | "-" { MINUS }
 | "*" { STAR }

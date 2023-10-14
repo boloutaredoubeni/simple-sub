@@ -11,6 +11,7 @@ module Type = struct
       | Ty_function of { argument : t; result : t }
       | Ty_unit
       | Ty_tuple of { first : t; second : t; rest : t list }
+      | Ty_vector of { element : t }
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
@@ -31,6 +32,7 @@ module Type = struct
           let rest = List.map rest ~f:to_string in
           let rest = String.concat ~sep:", " rest in
           "(" ^ to_string first ^ ", " ^ to_string second ^ ", " ^ rest ^ ")"
+      | Ty_vector { element } -> to_string element ^ "[]"
       | Ty_record { fields } ->
           let fields =
             List.map fields ~f:(fun (name, type') ->
@@ -79,9 +81,20 @@ module rec T : sig
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
+    | Lvector of {
+        values : t list;
+        span : (Span.span[@compare.ignore]);
+        element : Type.t;
+      }
     | Lsubscript of {
         value : t;
         index : t;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Ltuple_subscript of {
+        value : t;
+        index : int;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
@@ -147,9 +160,20 @@ end = struct
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
+    | Lvector of {
+        values : t list;
+        span : (Span.span[@compare.ignore]);
+        element : Type.t;
+      }
     | Lsubscript of {
         value : t;
         index : t;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Ltuple_subscript of {
+        value : t;
+        index : int;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
@@ -200,6 +224,8 @@ end = struct
             second = type_of second;
             rest = List.map rest ~f:(fun t -> type_of t);
           }
+    | Lvector { element; _ } -> Ty_vector { element }
+    | Ltuple_subscript { type'; _ } -> type'
     | Lsubscript { type'; _ } -> type'
     | Lrecord { fields; _ } ->
         Ty_record { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
@@ -221,6 +247,8 @@ end = struct
       | Lvar { span; _ } -> span
       | Lapp { span; _ } -> span
       | Ltuple { span; _ } -> span
+      | Lvector { span; _ } -> span
+      | Ltuple_subscript { span; _ } -> span
       | Lsubscript { span; _ } -> span
       | Lrecord { span; _ } -> span
       | Lselect { span; _ } -> span

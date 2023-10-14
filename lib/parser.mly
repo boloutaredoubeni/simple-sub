@@ -14,6 +14,7 @@
 %token LBRACE RBRACE
 %token LPAREN RPAREN
 %token LBRACKET RBRACKET
+%token LBRACKET_BAR RBRACKET_BAR
 %token TRUE FALSE
 %token IF THEN ELSE
 %token COMMA
@@ -34,10 +35,12 @@ simple_expr
     | TRUE { Ubool { value=true; span=Span.create $sloc } }
     | FALSE { Ubool { value=false; span=Span.create $sloc } }
     | IDENT { Uvar { value=$1; span=Span.create $sloc } }
-    | simple_expr LBRACKET expr RBRACKET { Usubscript { value=$1; index=$3; span=Span.create $sloc } }
+    | simple_expr LBRACKET expr RBRACKET { Usubscript { value=$1; index=$3; span=Span.create $sloc } }  
+    | simple_expr DOT INT { Utuple_subscript { value=$1; index=$3; span=Span.create $sloc } }
     | simple_expr DOT IDENT { Uselect { value=$1; field=$3; span=Span.create $sloc } }
     | LBRACE record_fields RBRACE { Urecord { fields=$2; span=Span.create $sloc } }
     | LPAREN elements RPAREN { Utuple { values=$2; span=Span.create $sloc } }
+    | LBRACKET_BAR elements RBRACKET_BAR { Uvector { values=$2; span=Span.create $sloc } }
 
 expr
     : simple_expr { $1 }

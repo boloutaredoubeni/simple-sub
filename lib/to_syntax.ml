@@ -140,7 +140,27 @@ module Tests = struct
     [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
 
   let%expect_test "tuple index" =
-    run_it "(1, 2)[0]";
+    run_it "(1, 2).0";
     [%expect
-      {| (Usubscript(value(Utuple(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
+      {| (Utuple_subscript(value(Utuple(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))))(index 0)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 8)))))) |}]
+
+  let%expect_test "empty vector" =
+    run_it "[||]";
+    [%expect
+      {| (Uvector(values())(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
+
+  let%expect_test "vector" =
+    run_it "[| 1, 2 |]";
+    [%expect
+      {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
+
+  let%expect_test "heterogeneous vector" =
+    run_it "[| 1, true |]";
+    [%expect
+      {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Ubool(value true)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
+
+  let%expect_test "vector subscript" =
+    run_it "[| 1, 2 |][0]";
+    [%expect
+      {| (Usubscript(value(Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 11)))(finish(Position(line 1)(column 12)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
 end

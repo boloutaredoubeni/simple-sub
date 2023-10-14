@@ -4,6 +4,7 @@ open Tast
 
 exception Unbound_variable of { value : Symbol.t; span : Span.t }
 exception Missing_record_field of { value : Symbol.t }
+exception Missing_tuple_index of { value : int }
 exception Constrain_error of { lhs : SimpleType.t; rhs : SimpleType.t }
 
 module type FRESH_VAR = sig
@@ -86,6 +87,12 @@ functor
                 | Sfunction_type { argument; result } ->
                     Sfunction_type
                       { argument = freshen argument; result = freshen result }
+                | Ssparse_tuple { indices } ->
+                    Ssparse_tuple
+                      {
+                        indices =
+                          List.map indices ~f:(fun (i, t) -> (i, freshen t));
+                      }
                 | Stuple_type { first; second; rest } ->
                     Stuple_type
                       {
@@ -93,6 +100,8 @@ functor
                         second = freshen second;
                         rest = List.map rest ~f:freshen;
                       }
+                | Svector_type { element } ->
+                    Svector_type { element = freshen element }
                 | Srecord { fields } ->
                     Srecord
                       {
@@ -158,6 +167,13 @@ module Extrude = struct
                   extrude self (Polar.Type.create argument (Polar.not polarity));
                 result = extrude self (create_type result);
               }
+        | Ssparse_tuple { indices } ->
+            Ssparse_tuple
+              {
+                indices =
+                  List.map indices ~f:(fun (i, t) ->
+                      (i, extrude self (create_type t)));
+              }
         | Stuple_type { first; second; rest } ->
             Stuple_type
               {
@@ -165,6 +181,8 @@ module Extrude = struct
                 second = extrude self (create_type second);
                 rest = List.map rest ~f:(fun t -> extrude self (create_type t));
               }
+        | Svector_type { element } ->
+            Svector_type { element = extrude self (create_type element) }
         | Srecord { fields } ->
             Srecord
               {
@@ -261,6 +279,47 @@ module Constrain = struct
             constrain (Constraint { lhs = lhs_second; rhs = rhs_second });
             List.iter2_exn lhs_rest rhs_rest ~f:(fun lhs rhs ->
                 constrain (Constraint { lhs; rhs }))
+        | Ssparse_tuple { indices = lhs }, Ssparse_tuple { indices = rhs } ->
+            List.iter rhs ~f:(fun (j, rhs_type) ->
+                match List.Assoc.find lhs j ~equal:Int.equal with
+                | Some lhs_type ->
+                    constrain (Constraint { lhs = lhs_type; rhs = rhs_type })
+                | None -> raise (Missing_tuple_index { value = j }))
+        | ( Stuple_type
+              { first = lhs_first; second = lhs_second; rest = lhs_rest },
+            Ssparse_tuple { indices = rhs } ) ->
+            List.iter rhs ~f:(fun (j, rhs_type) ->
+                match j with
+                | 0 ->
+                    constrain (Constraint { lhs = lhs_first; rhs = rhs_type })
+                | 1 ->
+                    constrain (Constraint { lhs = lhs_second; rhs = rhs_type })
+                | n -> (
+                    let i = n - 2 in
+                    match List.nth lhs_rest i with
+                    | Some lhs_type ->
+                        constrain
+                          (Constraint { lhs = lhs_type; rhs = rhs_type })
+                    | None -> raise (Missing_tuple_index { value = i })))
+        | ( Ssparse_tuple { indices = lhs },
+            Stuple_type
+              { first = rhs_first; second = rhs_second; rest = rhs_rest } ) ->
+            List.iter lhs ~f:(fun (j, lhs_type) ->
+                match j with
+                | 0 ->
+                    constrain (Constraint { lhs = lhs_type; rhs = rhs_first })
+                | 1 ->
+                    constrain (Constraint { lhs = lhs_type; rhs = rhs_second })
+                | n -> (
+                    let i = n - 2 in
+                    match List.nth rhs_rest i with
+                    | Some rhs_type ->
+                        constrain
+                          (Constraint { lhs = lhs_type; rhs = rhs_type })
+                    | None -> raise (Missing_tuple_index { value = i })))
+        | ( Svector_type { element = lhs_element },
+            Svector_type { element = rhs_element } ) ->
+            constrain (Constraint { lhs = lhs_element; rhs = rhs_element })
         | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields } ->
             List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
                 match
@@ -426,12 +485,27 @@ functor
             | _ -> assert false
           in
           Ttuple { first; second; rest; span }
+      | Uvector { values; span } ->
+          let values = List.map values ~f:(map_ast self) in
+          let element =
+            let self = Self.level_up self in
+            S.Fresh_var.f (Self.level self)
+          in
+          List.iter values ~f:(fun value ->
+              constrain (Tast.T.type_of value) element);
+          Tvector { values; span; element }
+      | Utuple_subscript { value; index; span } ->
+          let value = map_ast self value in
+          let res = S.Fresh_var.f (Self.level self) in
+          constrain (Tast.T.type_of value)
+            (Ssparse_tuple { indices = [ (index, res) ] });
+          Ttuple_subscript { value; index; span; type' = res }
       | Usubscript { value; index; span } ->
           let value = map_ast self value in
           let index = map_ast self index in
           let res = S.Fresh_var.f (Self.level self) in
           constrain (Tast.T.type_of value)
-            (SimpleType.Stuple_type { first = res; second = res; rest = [] });
+            (SimpleType.Svector_type { element = res });
           constrain (Tast.T.type_of index) Sint_type;
           Tsubscript { value; index; span; type' = res }
       | Urecord { fields; span } ->
@@ -690,7 +764,32 @@ module Tests = struct
     [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
 
   let%expect_test "tuple index" =
-    run_it "(1, 2)[0]";
+    run_it "(1, 2).0";
     [%expect
       {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+
+  let%expect_test "triple index" =
+    run_it "(1, 2, true).2";
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type))(upper_bounds())))) |}]
+
+  let%expect_test "empty vector" =
+    run_it "[||]";
+    [%expect
+      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds())(upper_bounds())))))) |}]
+
+  let%expect_test "vector" =
+    run_it "[| 1, 2 |]";
+    [%expect
+      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sint_type Sint_type))(upper_bounds())))))) |}]
+
+  let%expect_test "heterogeneous vector" =
+    run_it "[| 1, true |]";
+    [%expect
+      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))))) |}]
+
+  let%expect_test "vector subscript" =
+    run_it "[| 1, 2 |][0]";
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
 end

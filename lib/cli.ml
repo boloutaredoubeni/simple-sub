@@ -28,7 +28,6 @@ module Make (S : S) : T = struct
     Command.basic ~summary:"Fx Programming Language"
       [%map_open.Command
         let print_ast = flag "-dump-ast" no_arg ~doc:"FILE dump ast to file"
-        (* TODO: make type simplification 'optional' *)
         and print_tast = flag "-dump-tast" no_arg ~doc:"FILE infer type of file"
         and print_lambda =
           flag "-dump-lambda" no_arg ~doc:"FILE dump lambda to file"
