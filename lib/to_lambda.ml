@@ -449,27 +449,57 @@ module Tests = struct
 
   let%expect_test "empty vector" =
     run_it "[||]";
-    [%expect
-      {| (Ty_vector(read(Ty_variable(name(Symbol __1))))(write(Ty_variable(name(Symbol __0))))) |}]
+    [%expect {| (Ty_readonly_vector(element(Ty_variable(name(Symbol __0))))) |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Ty_vector(read(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_int)))(write(Ty_variable(name(Symbol __0))))) |}]
+      {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)))) |}]
 
   let%expect_test "heterogeneous vector" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Ty_vector(read(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_bool)))(rhs Ty_int)))(write(Ty_variable(name(Symbol __0))))) |}]
+      {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)))(rhs Ty_int)))) |}]
 
   let%expect_test "vector subscript" =
     run_it "[| 1, 2 |][0]";
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
 
   let%expect_test "heterogeneous vector subscript" =
     run_it "[| true, 2 |][0]";
     [%expect
-      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_bool)))(rhs Ty_int)) |}]
+      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_bool)))(rhs Ty_int)) |}]
+
+  (* let%expect_test "local readwrite vector" =
+     run_it {|
+       let xs = mut [| 0, 1|] in
+       xs[0] = 1 |};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+         let%expect_test "readwrite vector, no passing" =
+     run_it {|
+       let xs = ref [| 0, 1|] in
+       xs[0] = 1 |};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+         let%expect_test "readwrite vector, capture readonly" =
+     run_it {|
+       let xs = mut [| 0, 1|] in
+       let f x -> xs[0] = x in
+       xs[0] = 1;
+       f 1|};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+     let%expect_test "readwrite vector, capture readwrite" =
+     run_it {|
+       let xs = ref [| 0, 1|] in
+       let f x -> xs[0] = x in
+       xs[0] = 1;
+       f 1|};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+
+     let%expect_test "writeonly vector" = *)
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";

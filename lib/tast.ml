@@ -51,6 +51,8 @@ module rec Simple_type : sig
          let xs = mut [||] in
          // this is global readwrite
          let xs = ref [||] in
+         // pass readonly
+          f xs
          // this is pass readwrite
           f (&xs[..])
          // this is pass writeonly

@@ -8,6 +8,10 @@ exception Missing_tuple_index of { value : int }
 exception Constrain_error of { lhs : Simple_type.t; rhs : Simple_type.t }
 exception Captured_mutable of { value : Symbol.t; span : Span.t }
 
+type read_or_write = Read | Write | ReadWrite
+
+exception Readability_error of { value : Simple_type.t; rw : read_or_write }
+
 exception
   Invalid_operation of {
     op : Syntax.Op.t;
@@ -359,7 +363,8 @@ module Constrain = struct
             match (lhs_write, rhs_write) with
             | Some lhs_write, Some rhs_write ->
                 constrain (Constraint { lhs = rhs_write; rhs = lhs_write })
-            | None, Some _ -> failwith "this is an inref"
+            | None, Some rhs ->
+                raise (Readability_error { value = rhs; rw = Write })
             | _ -> ())
         | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields } ->
             List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
@@ -553,12 +558,11 @@ functor
           Ttuple { first; second; rest; span }
       | Uvector { values; span } ->
           let values = List.map values ~f:(map_ast self) in
-          let write = S.Fresh_var.f (Self.level self) in
+
           let read = S.Fresh_var.f (Self.level self) in
           List.iter values ~f:(fun value ->
-              constrain (Tast.T.type_of value) write;
               constrain (Tast.T.type_of value) read);
-          let type' = Svector_type { read = Some read; write = Some write } in
+          let type' = Svector_type { read = Some read; write = None } in
           Tvector { values; span; type' }
       | Utuple_subscript { value; index; span } ->
           let value = map_ast self value in
@@ -920,27 +924,27 @@ module Tests = struct
   let%expect_test "empty vector" =
     run_it "[||]";
     [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds())(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds()))))))) |}]
+      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds()))))))(write())) |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))) |}]
+      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))(write())) |}]
 
   let%expect_test "heterogeneous vector" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds()))))))) |}]
+      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds()))))))(write())) |}]
 
   let%expect_test "vector subscript" =
     run_it "[| 1, 2 |][0]";
     [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
 
   let%expect_test "heterogeneous vector subscript" =
     run_it "[| true, 2 |][0]";
     [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))) |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
@@ -954,6 +958,43 @@ module Tests = struct
   let%expect_test "vector update" =
     run_it "xs[0] = 1";
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+  let%expect_test "readonly vector" =
+    run_it {|
+      let xs = [| 0, 1|] in
+      xs[0] = 1 |};
+    [%expect {| ("Fx__Typing.Readability_error(_, 1)") |}]
+
+  (* let%expect_test "local readwrite vector" =
+     run_it {|
+       let xs = mut [| 0, 1|] in
+       xs[0] = 1 |};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+         let%expect_test "readwrite vector, no passing" =
+     run_it {|
+       let xs = ref [| 0, 1|] in
+       xs[0] = 1 |};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+         let%expect_test "readwrite vector, capture readonly" =
+     run_it {|
+       let xs = mut [| 0, 1|] in
+       let f x -> xs[0] = x in
+       xs[0] = 1;
+       f 1|};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+     let%expect_test "readwrite vector, capture readwrite" =
+     run_it {|
+       let xs = ref [| 0, 1|] in
+       let f x -> xs[0] = x in
+       xs[0] = 1;
+       f 1|};
+     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+
+     let%expect_test "writeonly vector" = *)
 
   let%expect_test "seq" =
     run_it "1; 2";

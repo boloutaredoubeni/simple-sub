@@ -22,7 +22,7 @@ end
 
 (*
    TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
-   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting, iterators, break, contnue, return, yield, mutable vs immutable strings, state vars
+   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting, iterators, break, contnue, return, yield, mutable vs immutable strings, state vars, arrays of fixed length, slices
    TODO: delimited ir
    TODO: ownership based reference counting
    TODO: compilation to WASM and/or LLVM
