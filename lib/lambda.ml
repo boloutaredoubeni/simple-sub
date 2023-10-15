@@ -15,7 +15,7 @@ module Type = struct
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
-      | Ty_mutable of { type' : t }
+      | Ty_mutable of { read : t option; write : t option }
       | Ty_int
       | Ty_float
       | Ty_bool
@@ -24,7 +24,13 @@ module Type = struct
     let rec to_string = function
       | Ty_top -> "any"
       | Ty_bottom -> "void"
-      | Ty_mutable { type' } -> "mut " ^ to_string type'
+      | Ty_mutable { read; write } -> (
+          match (read, write) with
+          | Some read, Some write ->
+              "mutable " ^ to_string read ^ " & " ^ to_string write
+          | Some read, None -> "mutable " ^ to_string read
+          | None, Some write -> "mutable " ^ to_string write
+          | None, None -> "mutable void")
       | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
       | Ty_intersection { lhs; rhs } -> to_string lhs ^ " & " ^ to_string rhs
       | Ty_function { argument; result } ->

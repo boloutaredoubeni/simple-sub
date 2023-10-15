@@ -92,10 +92,12 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let type' = Closure.type_of closure in
         let app = Lvar { value = name; span; type' } in
         Ldef { name; closure; span; app; fn_type = type' }
-    | Tvar { value; span; _ } -> (
+    | Tvar { value; span; type' } -> (
         match Type_env.find self value with
         | None -> failwith "unbound var"
-        | Some type' -> Lvar { value; span; type' })
+        | Some _ ->
+            let type' = map_type self type' in
+            Lvar { value; span; type' })
     | Tlet { binding = name, type'; value; app; span } ->
         let value = map_ast self value in
         let type' = map_type self type' in
@@ -222,9 +224,18 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let result = Polar.Type.create result polar in
           Ty_function
             { argument = f argument in_process; result = f result in_process }
-      | PolarType { type' = Smutable { type'; _ }; polar } ->
-          let type' = Polar.Type.create type' polar in
-          Ty_mutable { type' = f type' in_process }
+      | PolarType { type' = Smutable { read; write; _ }; polar } ->
+          let read =
+            Option.map read ~f:(fun read ->
+                let read = Polar.Type.create read polar in
+                f read in_process)
+          in
+          let write =
+            Option.map write ~f:(fun write ->
+                let write = Polar.Type.create write polar in
+                f write in_process)
+          in
+          Ty_mutable { read; write }
       | PolarType { type' = Ssparse_tuple _; _ } ->
           failwith "sparse tuple not supported yet"
       | PolarType { type' = Stuple_type { first; second; rest }; polar } ->
@@ -354,7 +365,7 @@ module Tests = struct
   let%expect_test "type let function" =
     run_it {| let f x -> 0 in f |};
     [%expect
-      {| (Ty_function(argument(Ty_variable(name(Symbol __2))))(result Ty_int)) |}]
+      {| (Ty_function(argument(Ty_variable(name(Symbol __1))))(result Ty_int)) |}]
 
   let%expect_test "type app" =
     run_it {| let f x -> 0 in f 2 |};
@@ -367,7 +378,7 @@ module Tests = struct
       def f x = f 0 in 
       f
     |};
-    [%expect {| (Ty_variable(name(Symbol __6))) |}]
+    [%expect {| (Ty_variable(name(Symbol __3))) |}]
 
   let%expect_test "type binop" =
     run_it "1 + 2";
@@ -439,7 +450,7 @@ module Tests = struct
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
-    [%expect {| (Ty_mutable(type' Ty_int)) |}]
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
 
   let%expect_test "seq" =
     run_it "1; 2";
@@ -449,6 +460,13 @@ module Tests = struct
     run_it "let mut a = 0 in a = 1";
     [%expect {| Ty_unit |}]
 
+  let%expect_test "declare mut closure" =
+    run_it {|
+      let mut f = fn x -> x in
+      f 0
+    |};
+    [%expect {| (Ty_variable(name(Symbol __7))) |}]
+
   let%expect_test "mut closure" =
     run_it
       {|
@@ -457,7 +475,7 @@ module Tests = struct
       f = fn x -> x + 1;
       f 0
     |};
-    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+    [%expect {| (Ty_variable(name(Symbol __7))) |}]
 
   let%expect_test "disjoint mut" =
     run_it
@@ -467,7 +485,7 @@ module Tests = struct
       f = 7;
       f 0
     |};
-    [%expect {| (Ty_variable(name(Symbol __1))) |}]
+    [%expect {| (Ty_variable(name(Symbol __7))) |}]
 
   let%expect_test "value restriction" =
     run_it
@@ -476,7 +494,7 @@ module Tests = struct
       c = (fn x -> x + 1);
       c true
       |};
-    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+    [%expect {| Ty_unit |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};
@@ -491,7 +509,7 @@ module Tests = struct
       end;
       i
     |};
-    [%expect {| (Ty_mutable(type' Ty_int)) |}]
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
 
   let%expect_test "for range" =
     run_it

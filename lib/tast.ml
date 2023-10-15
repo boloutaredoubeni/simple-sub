@@ -36,11 +36,13 @@ module rec Simple_type : sig
     | Sint_type
     | Sfloat_type
     | Sbool_type
-    | Smutable of { type' : t; scope : Scope.t }
+    (* FIXME: mutable types need 'read'/'write's https://blog.polybdenum.com/2020/08/22/subtype-inference-by-example-part-8-mutability.html *)
+    | Smutable of { read : t option; write : t option; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
+      (* FIXME: mutable types need 'read'/'write's https://blog.polybdenum.com/2020/08/22/subtype-inference-by-example-part-8-mutability.html *)
     | Svector_type of { element : t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
@@ -53,7 +55,7 @@ end = struct
     | Sint_type
     | Sfloat_type
     | Sbool_type
-    | Smutable of { type' : t; scope : Scope.t }
+    | Smutable of { read : t option; write : t option; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
@@ -77,10 +79,17 @@ end = struct
     | Srecord { fields } ->
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
-    | Smutable { type'; _ } -> level type'
+    | Smutable { read; write; _ } ->
+        let read_level =
+          Option.value_map read ~default:Level.default ~f:level
+        in
+        let write_level =
+          Option.value_map write ~default:Level.default ~f:level
+        in
+        Level.max read_level write_level
 
   let rec deref = function
-    | Smutable { type'; _ } -> deref type'
+    | Smutable { read; _ } -> Option.value_exn read |> deref
     | type' -> type'
 end
 

@@ -23,6 +23,7 @@
 %token COMMA
 %token SEMICOLON
 %token PLUS MINUS STAR SLASH
+%token PLUS_DOT MINUS_DOT STAR_DOT SLASH_DOT
 %token EQUAL_EQUAL LESS GREATER LESS_EQUAL GREATER_EQUAL NOT_EQUAL
 %token EOF
 
@@ -60,6 +61,10 @@ expr
     | left = expr MINUS right = expr { Uop { op=Op.Sub; left; right; span=Span.create $sloc } }
     | left = expr STAR right = expr { Uop { op=Op.Mul; left; right; span=Span.create $sloc } }
     | left = expr SLASH right = expr { Uop { op=Op.Div; left; right; span=Span.create $sloc } }
+    | left = expr PLUS_DOT right = expr { Uop { op=Op.FAdd; left; right; span=Span.create $sloc } }
+    | left = expr MINUS_DOT right = expr { Uop { op=Op.FSub; left; right; span=Span.create $sloc } }
+    | left = expr STAR_DOT right = expr { Uop { op=Op.FMul; left; right; span=Span.create $sloc } }
+    | left = expr SLASH_DOT right = expr { Uop { op=Op.FDiv; left; right; span=Span.create $sloc } }
     | left = expr EQUAL_EQUAL right = expr { Uop { op=Op.Eq; left; right; span=Span.create $sloc } }
     | left = expr LESS right = expr { Uop { op=Op.Lt; left; right; span=Span.create $sloc } }
     | left = expr GREATER right = expr { Uop { op=Op.Gt; left; right; span=Span.create $sloc } }
@@ -125,7 +130,6 @@ elements
     : separated_list(COMMA, expr) { $1 }
 
 iterate
-(* TODO: these can be condensed *)
     : name = IDENT LEFT_ARROW start = expr TO finish = expr  { (name, start, true, finish, Span.create $sloc)  }
     | name = IDENT LEFT_ARROW start = expr DOWNTO finish = expr { (name, start, false, finish, Span.create $sloc)  }
 

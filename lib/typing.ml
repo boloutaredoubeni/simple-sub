@@ -71,8 +71,13 @@ functor
               if Level.compare type_level limit < 1 then ty
               else
                 match ty with
-                | Smutable { type'; scope } ->
-                    Smutable { type' = freshen type'; scope }
+                | Smutable { read; write; scope } ->
+                    Smutable
+                      {
+                        read = Option.map read ~f:freshen;
+                        write = Option.map write ~f:freshen;
+                        scope;
+                      }
                 | Svar_type { state } -> (
                     match freshened#get state with
                     | Some state -> Svar_type { state }
@@ -170,8 +175,15 @@ module Extrude = struct
         | Sfloat_type -> Sfloat_type
         | Sbool_type -> Sbool_type
         | Sunit_type -> Sunit_type
-        | Smutable { type'; scope } ->
-            Smutable { type' = extrude self (create_type type'); scope }
+        | Smutable { read; write; scope } ->
+            let read =
+              Option.map read ~f:(fun read -> extrude self (create_type read))
+            in
+            let write =
+              Option.map write ~f:(fun write ->
+                  extrude self (Polar.Type.create write (Polar.not polarity)))
+            in
+            Smutable { read; write; scope }
         | Sfunction_type { argument; result } ->
             Sfunction_type
               {
@@ -280,13 +292,16 @@ module Constrain = struct
         | Sfloat_type, Sfloat_type -> ()
         | Sbool_type, Sbool_type -> ()
         | Sunit_type, Sunit_type -> ()
-        | Smutable { type' = lhs; _ }, rhs ->
+        | Smutable _, Smutable _ -> failwith "mutable type is not allowed yet"
+        | Smutable _, _ ->
+            failwith "mutable type is not allowed yet (mutable is lhs)"
+        | lhs, Smutable { write = Some rhs; read = Some _; _ } ->
             constrain (Constraint { lhs; rhs })
-        | lhs, Smutable { type' = rhs; _ } ->
-            constrain (Constraint { lhs; rhs })
+        | _, Smutable { write = Some _; _ } ->
+            failwith "mutable type is writeonly (mutable is rhs)"
         | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
             Sfunction_type { argument = rhs_arg; result = rhs_res } ) ->
-            constrain (Constraint { lhs = lhs_arg; rhs = rhs_arg });
+            constrain (Constraint { lhs = rhs_arg; rhs = lhs_arg });
             constrain (Constraint { lhs = lhs_res; rhs = rhs_res })
         | ( Stuple_type
               { first = lhs_first; second = lhs_second; rest = lhs_rest },
@@ -417,7 +432,6 @@ functor
         Self { self; level = Level.level_up level; scope }
 
       let find_exn (Self { self; _ }) v = Map.find_exn self v
-      let find (Self { self; _ }) v = Map.find self v
 
       let add (Self { self; level; scope }) ~key ~data =
         Self { self = Map.add_exn self ~key ~data; level; scope }
@@ -452,27 +466,34 @@ functor
       | Uop { op = (Add | Sub | Mul | Div) as int_op; left; right; span } ->
           let left = map_ast self left in
           let right = map_ast self right in
-
-          constrain (Tast.T.type_of left) (Tast.T.type_of right);
+          constrain (Tast.T.type_of left) Sint_type;
+          constrain (Tast.T.type_of right) Sint_type;
           let op =
             let open Primop in
-            let lhs = Tast.T.type_of left in
-            let lhs = Simple_type.deref lhs in
-            let rhs = Tast.T.type_of right in
-            let rhs = Simple_type.deref rhs in
-            match (int_op, lhs, rhs) with
-            | Add, Sint_type, Sint_type -> Tint_add
-            | Sub, Sint_type, Sint_type -> Tint_sub
-            | Mul, Sint_type, Sint_type -> Tint_mul
-            | Div, Sint_type, Sint_type -> Tint_div
-            | Add, Sfloat_type, Sfloat_type -> Tfloat_add
-            | Sub, Sfloat_type, Sfloat_type -> Tfloat_sub
-            | Mul, Sfloat_type, Sfloat_type -> Tfloat_mul
-            | Div, Sfloat_type, Sfloat_type -> Tfloat_div
-            | op, lhs, rhs ->
-                raise (Invalid_operation { op; args = [ lhs; rhs ]; span })
+            match int_op with
+            | Add -> Tint_add
+            | Sub -> Tint_sub
+            | Mul -> Tint_mul
+            | Div -> Tint_div
+            | _ -> assert false
           in
           Tprimop { op; args = [ left; right ]; span; type' = Sint_type }
+      | Uop { op = (FAdd | FSub | FMul | FDiv) as float_op; left; right; span }
+        ->
+          let left = map_ast self left in
+          let right = map_ast self right in
+          constrain (Tast.T.type_of left) Sfloat_type;
+          constrain (Tast.T.type_of right) Sfloat_type;
+          let op =
+            let open Primop in
+            match float_op with
+            | FAdd -> Tfloat_add
+            | FSub -> Tfloat_sub
+            | FMul -> Tfloat_mul
+            | FDiv -> Tfloat_div
+            | _ -> assert false
+          in
+          Tprimop { op; args = [ left; right ]; span; type' = Sfloat_type }
       (* NOTE: not eq and cmp are different concepts *)
       | Uop
           { op = (Eq | Neq | Geq | Leq | Lt | Gt) as relop; left; right; span }
@@ -506,6 +527,14 @@ functor
       | Uvar { value; span } when Self.contains self value ->
           let type' = Self.find_exn self value in
           let type' = TypeScheme.instantiate type' (Self.level self) in
+          let type' =
+            match type' with
+            | Smutable { read = Some read; _ } -> read
+            | Smutable { write = Some _; _ } ->
+                failwith "got a writeonly mutable"
+            | Smutable _ -> failwith "got a mutable without read or write"
+            | _ -> type'
+          in
           Tvar { value; span; type' }
       | Uvar { value; span } -> raise (Unbound_variable { value; span })
       | Utuple { values = []; span } -> Tunit { span }
@@ -538,21 +567,22 @@ functor
             (Simple_type.Svector_type { element = res });
           constrain (Tast.T.type_of index) Sint_type;
           Tsubscript { value; index; span; type' = res }
-      | Uassign { name; value; span } ->
+      | Uassign { name; value; span } when Self.contains self name ->
           let type' =
-            match Self.find self name with
-            | None -> failwith "unbound variable"
-            | Some scheme -> (
-                match TypeScheme.instantiate scheme (Self.level self) with
-                | Smutable { scope; _ } as type'
-                  when Scope.(scope = Self.scope self) ->
-                    type'
-                | Smutable _ -> raise (Captured_mutable { value = name; span })
-                | _ -> failwith "expected mutable")
+            let scheme = Self.find_exn self name in
+
+            match TypeScheme.instantiate scheme (Self.level self) with
+            | Smutable { scope; write = Some write; _ }
+              when Scope.(scope = Self.scope self) ->
+                write
+            | Smutable _ -> raise (Captured_mutable { value = name; span })
+            | _ -> failwith "expected mutable"
           in
           let value = map_ast self value in
           constrain (Tast.T.type_of value) type';
           Tassign { name = (name, type'); value; span }
+      | Uassign { name = value; span; _ } ->
+          raise (Unbound_variable { value; span })
       | Uassign_subscript { value; index; new_value; span } ->
           let value = map_ast self value in
           let new_value = map_ast self new_value in
@@ -577,20 +607,51 @@ functor
             (Simple_type.Srecord { fields = [ (field, res) ] });
           Tselect { value; field; span; type' = res }
       | Ulambda { closure } -> Tlambda { closure = map_closure self closure }
-      | Ulet { binding; is_mutable; value; app; span } ->
+      | Ulet_fun { name; closure; app; span } ->
+          let value = map_closure (Self.level_up self) closure in
+          let level = Self.level self in
+          let type' = Tast.Closure.type_of value in
+          let type' = PolymorhicType.create level type' in
+          let scheme = TypeScheme.of_polymorphic_type type' in
+          let app = map_ast (Self.add self ~key:name ~data:scheme) app in
+          let type' = TypeScheme.instantiate scheme level in
+          Tlet
+            {
+              binding = (name, type');
+              value = Tlambda { closure = value };
+              app;
+              span;
+            }
+      | Ulet
+          {
+            binding;
+            is_mutable = false;
+            value = Ulambda { closure };
+            app;
+            span;
+          } ->
+          map_ast self (Ulet_fun { name = binding; closure; app; span })
+      | Ulet { binding; is_mutable = true; value; app; span } ->
           let value = map_ast (Self.level_up self) value in
           let level = Self.level self in
           let type' = Tast.T.type_of value in
-          let scheme =
-            if is_mutable then
-              let type' =
-                Simple_type.Smutable { type'; scope = Self.scope self }
-              in
-              TypeScheme.of_simple_type type'
-            else
-              let type' = PolymorhicType.create level type' in
-              TypeScheme.of_polymorphic_type type'
+          let read = S.Fresh_var.f level in
+          let write = S.Fresh_var.f level in
+          constrain type' read;
+          constrain type' write;
+          let type' =
+            Simple_type.Smutable
+              { read = Some read; write = Some write; scope = Self.scope self }
           in
+          let scheme = TypeScheme.of_simple_type type' in
+          let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
+          let type' = TypeScheme.instantiate scheme level in
+          Tlet { binding = (binding, type'); value; app; span }
+      | Ulet { binding; value; app; span; is_mutable = false } ->
+          let value = map_ast (Self.level_up self) value in
+          let level = Self.level self in
+          let type' = Tast.T.type_of value in
+          let scheme = TypeScheme.of_simple_type type' in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
           let type' = TypeScheme.instantiate scheme level in
           Tlet { binding = (binding, type'); value; app; span }
@@ -598,16 +659,6 @@ functor
           let first = map_ast self first in
           let second = map_ast self second in
           Tseq { first; second; span }
-      | Ulet_fun { name; closure; app; span } ->
-          map_ast self
-            (Ulet
-               {
-                 binding = name;
-                 is_mutable = false;
-                 value = Ulambda { closure };
-                 app;
-                 span;
-               })
       | Udef { name; closure; app; span } ->
           let expr = S.Fresh_var.f (Level.level_up (Self.level self)) in
           let closure =
@@ -797,8 +848,8 @@ module Tests = struct
     [%expect {| Sint_type |}]
 
   let%expect_test "type float binop" =
-    run_it "1.0 + 2.0";
-    [%expect {| Sint_type |}]
+    run_it "1.0 +. 2.0";
+    [%expect {| Sfloat_type |}]
 
   let%expect_test "type binop precedence" =
     run_it "1 + 2 * 3";
@@ -818,7 +869,7 @@ module Tests = struct
 
   let%expect_test "bad binop" =
     run_it "1 + 0.67";
-    [%expect {| ("Fx__Typing.Constrain_error(0, 1)") |}]
+    [%expect {| ("Fx__Typing.Constrain_error(1, 0)") |}]
 
   let%expect_test "bool eq" =
     run_it "true == false";
@@ -882,11 +933,12 @@ module Tests = struct
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
-    [%expect {| (Smutable(type' Sint_type)(scope(Scope(value 0)))) |}]
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
 
   let%expect_test "mut update" =
     run_it "x = 1";
-    [%expect {| (Failure "unbound variable") |}]
+    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
   let%expect_test "vector update" =
     run_it "xs[0] = 1";
@@ -907,6 +959,14 @@ module Tests = struct
       f 1 |};
     [%expect {| ("Fx__Typing.Captured_mutable(_, _)") |}]
 
+  let%expect_test "declare mut closure" =
+    run_it {|
+      let mut f = fn x -> x in
+      f 0
+    |};
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __7))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+
   let%expect_test "mut closure" =
     run_it
       {|
@@ -915,7 +975,8 @@ module Tests = struct
       f = fn x -> x + 1;
       f 0
     |};
-    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __7))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
 
   let%expect_test "disjoint mut" =
     run_it
@@ -926,7 +987,7 @@ module Tests = struct
       f 0
     |};
     [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __7))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
 
   let%expect_test "value restriction" =
     run_it
@@ -935,7 +996,7 @@ module Tests = struct
       c = (fn x -> x + 1);
       c true
       |};
-    [%expect {| ("Fx__Typing.Invalid_operation(0, _, _)") |}]
+    [%expect {| Sunit_type |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};
@@ -950,7 +1011,8 @@ module Tests = struct
       end;
       i
     |};
-    [%expect {| (Smutable(type' Sint_type)(scope(Scope(value 0)))) |}]
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds(Sint_type))))) |}]
 
   let%expect_test "for range" =
     run_it

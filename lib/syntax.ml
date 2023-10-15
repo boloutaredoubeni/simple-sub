@@ -2,7 +2,21 @@ open Core
 open Text
 
 module Op = struct
-  type t = Add | Sub | Mul | Div | Eq | Neq | Lt | Gt | Leq | Geq
+  type t =
+    | Add
+    | Sub
+    | Mul
+    | Div
+    | Eq
+    | Neq
+    | Lt
+    | Gt
+    | Leq
+    | Geq
+    | FAdd
+    | FSub
+    | FMul
+    | FDiv
   [@@deriving compare, sexp]
 end
 
