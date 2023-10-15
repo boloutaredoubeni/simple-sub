@@ -73,11 +73,7 @@ functor
                 match ty with
                 | Smutable { read; write; scope } ->
                     Smutable
-                      {
-                        read = Option.map read ~f:freshen;
-                        write = Option.map write ~f:freshen;
-                        scope;
-                      }
+                      { read = freshen read; write = freshen write; scope }
                 | Svar_type { state } -> (
                     match freshened#get state with
                     | Some state -> Svar_type { state }
@@ -115,8 +111,10 @@ functor
                         second = freshen second;
                         rest = List.map rest ~f:freshen;
                       }
-                | Svector_type { element } ->
-                    Svector_type { element = freshen element }
+                | Svector_type { read; write } ->
+                    let read = Option.map read ~f:freshen in
+                    let write = Option.map write ~f:freshen in
+                    Svector_type { read; write }
                 | Srecord { fields } ->
                     Srecord
                       {
@@ -176,12 +174,9 @@ module Extrude = struct
         | Sbool_type -> Sbool_type
         | Sunit_type -> Sunit_type
         | Smutable { read; write; scope } ->
-            let read =
-              Option.map read ~f:(fun read -> extrude self (create_type read))
-            in
+            let read = extrude self (create_type read) in
             let write =
-              Option.map write ~f:(fun write ->
-                  extrude self (Polar.Type.create write (Polar.not polarity)))
+              extrude self (Polar.Type.create write (Polar.not polarity))
             in
             Smutable { read; write; scope }
         | Sfunction_type { argument; result } ->
@@ -205,8 +200,15 @@ module Extrude = struct
                 second = extrude self (create_type second);
                 rest = List.map rest ~f:(fun t -> extrude self (create_type t));
               }
-        | Svector_type { element } ->
-            Svector_type { element = extrude self (create_type element) }
+        | Svector_type { read; write } ->
+            let read =
+              Option.map read ~f:(fun read -> extrude self (create_type read))
+            in
+            let write =
+              Option.map write ~f:(fun write ->
+                  extrude self (Polar.Type.create write (Polar.not polarity)))
+            in
+            Svector_type { read; write }
         | Srecord { fields } ->
             Srecord
               {
@@ -295,10 +297,8 @@ module Constrain = struct
         | Smutable _, Smutable _ -> failwith "mutable type is not allowed yet"
         | Smutable _, _ ->
             failwith "mutable type is not allowed yet (mutable is lhs)"
-        | lhs, Smutable { write = Some rhs; read = Some _; _ } ->
+        | lhs, Smutable { write = rhs; read = _; _ } ->
             constrain (Constraint { lhs; rhs })
-        | _, Smutable { write = Some _; _ } ->
-            failwith "mutable type is writeonly (mutable is rhs)"
         | ( Sfunction_type { argument = lhs_arg; result = lhs_res },
             Sfunction_type { argument = rhs_arg; result = rhs_res } ) ->
             constrain (Constraint { lhs = rhs_arg; rhs = lhs_arg });
@@ -349,9 +349,18 @@ module Constrain = struct
                         constrain
                           (Constraint { lhs = lhs_type; rhs = rhs_type })
                     | None -> raise (Missing_tuple_index { value = i })))
-        | ( Svector_type { element = lhs_element },
-            Svector_type { element = rhs_element } ) ->
-            constrain (Constraint { lhs = lhs_element; rhs = rhs_element })
+        | ( Svector_type { read = lhs_read; write = lhs_write },
+            Svector_type { read = rhs_read; write = rhs_write } ) -> (
+            (match (lhs_read, rhs_read) with
+            | Some lhs_read, Some rhs_read ->
+                constrain (Constraint { lhs = lhs_read; rhs = rhs_read })
+            | None, Some _ -> failwith "this is an outref"
+            | _ -> ());
+            match (lhs_write, rhs_write) with
+            | Some lhs_write, Some rhs_write ->
+                constrain (Constraint { lhs = rhs_write; rhs = lhs_write })
+            | None, Some _ -> failwith "this is an inref"
+            | _ -> ())
         | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields } ->
             List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
                 match
@@ -528,12 +537,7 @@ functor
           let type' = Self.find_exn self value in
           let type' = TypeScheme.instantiate type' (Self.level self) in
           let type' =
-            match type' with
-            | Smutable { read = Some read; _ } -> read
-            | Smutable { write = Some _; _ } ->
-                failwith "got a writeonly mutable"
-            | Smutable _ -> failwith "got a mutable without read or write"
-            | _ -> type'
+            match type' with Smutable { read; _ } -> read | _ -> type'
           in
           Tvar { value; span; type' }
       | Uvar { value; span } -> raise (Unbound_variable { value; span })
@@ -549,10 +553,13 @@ functor
           Ttuple { first; second; rest; span }
       | Uvector { values; span } ->
           let values = List.map values ~f:(map_ast self) in
-          let element = S.Fresh_var.f (Self.level self) in
+          let write = S.Fresh_var.f (Self.level self) in
+          let read = S.Fresh_var.f (Self.level self) in
           List.iter values ~f:(fun value ->
-              constrain (Tast.T.type_of value) element);
-          Tvector { values; span; element }
+              constrain (Tast.T.type_of value) write;
+              constrain (Tast.T.type_of value) read);
+          let type' = Svector_type { read = Some read; write = Some write } in
+          Tvector { values; span; type' }
       | Utuple_subscript { value; index; span } ->
           let value = map_ast self value in
           let res = S.Fresh_var.f (Self.level self) in
@@ -564,7 +571,7 @@ functor
           let index = map_ast self index in
           let res = S.Fresh_var.f (Self.level self) in
           constrain (Tast.T.type_of value)
-            (Simple_type.Svector_type { element = res });
+            (Simple_type.Svector_type { read = Some res; write = None });
           constrain (Tast.T.type_of index) Sint_type;
           Tsubscript { value; index; span; type' = res }
       | Uassign { name; value; span } when Self.contains self name ->
@@ -572,8 +579,8 @@ functor
             let scheme = Self.find_exn self name in
 
             match TypeScheme.instantiate scheme (Self.level self) with
-            | Smutable { scope; write = Some write; _ }
-              when Scope.(scope = Self.scope self) ->
+            | Smutable { scope; write; _ } when Scope.(scope = Self.scope self)
+              ->
                 write
             | Smutable _ -> raise (Captured_mutable { value = name; span })
             | _ -> failwith "expected mutable"
@@ -589,7 +596,7 @@ functor
           let index = map_ast self index in
           let res = S.Fresh_var.f (Self.level self) in
           constrain (Tast.T.type_of value)
-            (Simple_type.Svector_type { element = res });
+            (Simple_type.Svector_type { write = Some res; read = None });
           constrain (Tast.T.type_of index) Sint_type;
           constrain (Tast.T.type_of new_value) res;
           Tassign_subscript { value; index; new_value; span }
@@ -640,8 +647,7 @@ functor
           constrain type' read;
           constrain type' write;
           let type' =
-            Simple_type.Smutable
-              { read = Some read; write = Some write; scope = Self.scope self }
+            Simple_type.Smutable { read; write; scope = Self.scope self }
           in
           let scheme = TypeScheme.of_simple_type type' in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
@@ -914,22 +920,27 @@ module Tests = struct
   let%expect_test "empty vector" =
     run_it "[||]";
     [%expect
-      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds())))))) |}]
+      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds())(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds()))))))) |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds())))))) |}]
+      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))) |}]
 
   let%expect_test "heterogeneous vector" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Svector_type(element(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))))) |}]
+      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds()))))))) |}]
 
   let%expect_test "vector subscript" =
     run_it "[| 1, 2 |][0]";
     [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+
+  let%expect_test "heterogeneous vector subscript" =
+    run_it "[| true, 2 |][0]";
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))) |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";

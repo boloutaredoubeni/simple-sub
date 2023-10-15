@@ -11,11 +11,13 @@ module Type = struct
       | Ty_function of { argument : t; result : t }
       | Ty_unit
       | Ty_tuple of { first : t; second : t; rest : t list }
-      | Ty_vector of { element : t }
+      | Ty_vector of { read : t; write : t }
+      | Ty_readonly_vector of { element : t }
+      | Ty_writeonly_vector of { element : t }
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
-      | Ty_mutable of { read : t option; write : t option }
+      | Ty_mutable of { read : t; write : t }
       | Ty_int
       | Ty_float
       | Ty_bool
@@ -24,13 +26,8 @@ module Type = struct
     let rec to_string = function
       | Ty_top -> "any"
       | Ty_bottom -> "void"
-      | Ty_mutable { read; write } -> (
-          match (read, write) with
-          | Some read, Some write ->
-              "mutable " ^ to_string read ^ " & " ^ to_string write
-          | Some read, None -> "mutable " ^ to_string read
-          | None, Some write -> "mutable " ^ to_string write
-          | None, None -> "mutable void")
+      | Ty_mutable { read; write } ->
+          "mut[+" ^ to_string read ^ ", -" ^ to_string write ^ "]"
       | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
       | Ty_intersection { lhs; rhs } -> to_string lhs ^ " & " ^ to_string rhs
       | Ty_function { argument; result } ->
@@ -40,7 +37,12 @@ module Type = struct
           let rest = List.map rest ~f:to_string in
           let rest = String.concat ~sep:", " rest in
           "(" ^ to_string first ^ ", " ^ to_string second ^ ", " ^ rest ^ ")"
-      | Ty_vector { element } -> to_string element ^ "[]"
+      | Ty_vector { read; write } ->
+          "vector[+" ^ to_string read ^ ", -" ^ to_string write ^ "]"
+      | Ty_readonly_vector { element } ->
+          "readonly vector[" ^ to_string element ^ "]"
+      | Ty_writeonly_vector { element } ->
+          "writeonly vector[" ^ to_string element ^ "]"
       | Ty_record { fields } ->
           let fields =
             List.map fields ~f:(fun (name, type') ->
@@ -92,7 +94,7 @@ module rec T : sig
     | Lvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
-        element : Type.t;
+        type' : Type.t;
       }
     | Lsubscript of {
         value : t;
@@ -189,7 +191,7 @@ end = struct
     | Lvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
-        element : Type.t;
+        type' : Type.t;
       }
     | Lsubscript of {
         value : t;
@@ -268,7 +270,7 @@ end = struct
             second = type_of second;
             rest = List.map rest ~f:(fun t -> type_of t);
           }
-    | Lvector { element; _ } -> Ty_vector { element }
+    | Lvector { type'; _ } -> type'
     | Ltuple_subscript { type'; _ } -> type'
     | Lsubscript { type'; _ } -> type'
     | Lrecord { fields; _ } ->

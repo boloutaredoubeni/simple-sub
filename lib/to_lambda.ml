@@ -47,10 +47,10 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tfloat { value; span } -> Lfloat { value; span }
     | Tbool { value; span } -> Lbool { value; span }
     | Tunit { span } -> Lunit { span }
-    | Tvector { values; span; element } ->
+    | Tvector { values; span; type' } ->
         let values = List.map values ~f:(map_ast self) in
-        let element = map_type self element in
-        Lvector { values; span; element }
+        let type' = map_type self type' in
+        Lvector { values; span; type' }
     | Ttuple { first; second; rest; span } ->
         let first = map_ast self first in
         let second = map_ast self second in
@@ -226,14 +226,12 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
             { argument = f argument in_process; result = f result in_process }
       | PolarType { type' = Smutable { read; write; _ }; polar } ->
           let read =
-            Option.map read ~f:(fun read ->
-                let read = Polar.Type.create read polar in
-                f read in_process)
+            let read = Polar.Type.create read polar in
+            f read in_process
           in
           let write =
-            Option.map write ~f:(fun write ->
-                let write = Polar.Type.create write polar in
-                f write in_process)
+            let write = Polar.Type.create write polar in
+            f write in_process
           in
           Ty_mutable { read; write }
       | PolarType { type' = Ssparse_tuple _; _ } ->
@@ -246,9 +244,28 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let second = f second in_process in
           let rest = List.map rest ~f:(fun t -> f t in_process) in
           Ty_tuple { first; second; rest }
-      | PolarType { type' = Svector_type { element }; polar } ->
-          let element = Polar.Type.create element polar in
-          Ty_vector { element = f element in_process }
+      | PolarType
+          {
+            type' = Svector_type { read = Some read; write = Some write };
+            polar;
+          } ->
+          let read = Polar.Type.create read polar in
+          let write = Polar.Type.create write (Polar.not polar) in
+          let read = f read in_process in
+          let write = f write in_process in
+          Ty_vector { read; write }
+      | PolarType { type' = Svector_type { read = None; write = None }; _ } ->
+          failwith "vector type not supported yet"
+      | PolarType
+          { type' = Svector_type { read = Some read; write = None }; polar } ->
+          Ty_readonly_vector
+            { element = f (Polar.Type.create read polar) in_process }
+      | PolarType
+          { type' = Svector_type { read = None; write = Some write }; polar } ->
+          Ty_writeonly_vector
+            {
+              element = f (Polar.Type.create write (Polar.not polar)) in_process;
+            }
       | PolarType { type' = Srecord { fields }; polar } ->
           let fields =
             List.map fields ~f:(fun (name, t) ->
@@ -432,21 +449,27 @@ module Tests = struct
 
   let%expect_test "empty vector" =
     run_it "[||]";
-    [%expect {| (Ty_vector(element(Ty_variable(name(Symbol __0))))) |}]
+    [%expect
+      {| (Ty_vector(read(Ty_variable(name(Symbol __1))))(write(Ty_variable(name(Symbol __0))))) |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Ty_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)))) |}]
+      {| (Ty_vector(read(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_int)))(write(Ty_variable(name(Symbol __0))))) |}]
 
   let%expect_test "heterogeneous vector" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Ty_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)))(rhs Ty_int)))) |}]
+      {| (Ty_vector(read(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_bool)))(rhs Ty_int)))(write(Ty_variable(name(Symbol __0))))) |}]
 
   let%expect_test "vector subscript" =
     run_it "[| 1, 2 |][0]";
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+
+  let%expect_test "heterogeneous vector subscript" =
+    run_it "[| true, 2 |][0]";
+    [%expect
+      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_bool)))(rhs Ty_int)) |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";

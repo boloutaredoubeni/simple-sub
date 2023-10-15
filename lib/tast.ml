@@ -36,14 +36,56 @@ module rec Simple_type : sig
     | Sint_type
     | Sfloat_type
     | Sbool_type
-    (* FIXME: mutable types need 'read'/'write's https://blog.polybdenum.com/2020/08/22/subtype-inference-by-example-part-8-mutability.html *)
-    | Smutable of { read : t option; write : t option; scope : Scope.t }
+    | Smutable of { read : t; write : t; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
-      (* FIXME: mutable types need 'read'/'write's https://blog.polybdenum.com/2020/08/22/subtype-inference-by-example-part-8-mutability.html *)
-    | Svector_type of { element : t }
+      (* TODO: mutable types need 'read'/'write's
+         should vectors and references be limited by scope and readonly/writeonly?
+
+         i.e forall i. 0 <= i < n -> v[i]
+         // this readonly
+         let xs = [||] in
+         // this is local readwrite, global readonly
+         let xs = mut [||] in
+         // this is global readwrite
+         let xs = ref [||] in
+         // this is pass readwrite
+          f (&xs[..])
+         // this is pass writeonly
+         f (&mut xs[..])
+
+         /// the  read/write reference version
+         // this is local readwrite, global readonly
+         let ref r = ... in
+         // this is global readwrite
+         let ref mut r = ... in
+         // this is pass readonly
+          f r
+         // this is pass writeonly
+         f (&mut r)
+         // this is ref write
+         r := 1
+         // this is ref read
+         *r OR ^r or @r // *r is the most common and preferred
+
+
+         /// state vars, similar to useState hooks in react
+         // this is user defined readwrite rules
+         var set_x get_x = ... in
+         // this is readonly
+         ..x..
+         // this is write only
+         set_x 1
+         // this is pass readwrite
+         f (x, set_x)
+         // this is pass readonly
+         f x
+         // this is pass writeonly
+         f set_x
+      *)
+    | Svector_type of { read : t option; write : t option }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -55,12 +97,12 @@ end = struct
     | Sint_type
     | Sfloat_type
     | Sbool_type
-    | Smutable of { read : t option; write : t option; scope : Scope.t }
+    | Smutable of { read : t; write : t; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
-    | Svector_type of { element : t }
+    | Svector_type of { read : t option; write : t option }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -75,22 +117,15 @@ end = struct
     | Stuple_type { first; second; rest } ->
         List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
             Level.max acc (level t))
-    | Svector_type { element } -> level element
+    | Svector_type { read; write } ->
+        List.fold [ read; write ] ~init:Level.default ~f:(fun acc -> function
+          | None -> acc | Some t -> Level.max acc (level t))
     | Srecord { fields } ->
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
-    | Smutable { read; write; _ } ->
-        let read_level =
-          Option.value_map read ~default:Level.default ~f:level
-        in
-        let write_level =
-          Option.value_map write ~default:Level.default ~f:level
-        in
-        Level.max read_level write_level
+    | Smutable { read; write; _ } -> Level.max (level read) (level write)
 
-  let rec deref = function
-    | Smutable { read; _ } -> Option.value_exn read |> deref
-    | type' -> type'
+  let rec deref = function Smutable { read; _ } -> deref read | type' -> type'
 end
 
 and Variable : sig
@@ -278,7 +313,7 @@ module rec T : sig
     | Tvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
-        element : Simple_type.t;
+        type' : Simple_type.t;
       }
     | Ttuple_subscript of {
         value : t;
@@ -382,7 +417,7 @@ end = struct
     | Tvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
-        element : Simple_type.t;
+        type' : Simple_type.t;
       }
     | Ttuple_subscript of {
         value : t;
@@ -467,7 +502,7 @@ end = struct
             second = type_of second;
             rest = List.map rest ~f:type_of;
           }
-    | Tvector { element; _ } -> Svector_type { element }
+    | Tvector { type'; _ } -> type'
     | Ttuple_subscript { type'; _ } | Tsubscript { type'; _ } -> type'
     | Tassign _ | Tassign_subscript _ | Tunit _ -> Sunit_type
     | Trecord { fields; _ } ->
