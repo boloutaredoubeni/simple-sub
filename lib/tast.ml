@@ -20,10 +20,14 @@ end
 
 module Scope = struct
   module T = struct
-    type t = Scope of { value : int } [@@deriving compare, sexp]
+    type t = Scope of { value : int } | Global [@@deriving compare, sexp]
 
+    let global = Global
     let default = Scope { value = 0 }
-    let incr (Scope { value }) = Scope { value = value + 1 }
+
+    let incr = function
+      | Scope { value } -> Scope { value = value + 1 }
+      | Global -> Global
   end
 
   include T
@@ -53,9 +57,9 @@ module rec Simple_type : sig
          let xs = ref [||] in
          // pass readonly
           f xs
-         // this is pass readwrite
+         // this is pass readwrite, only refs can be passed as readwrite
           f (&xs[..])
-         // this is pass writeonly
+         // this is pass writeonly, only refs can be passed as writeonly
          f (&mut xs[..])
 
          /// the  read/write reference version
@@ -65,7 +69,7 @@ module rec Simple_type : sig
          let ref mut r = ... in
          // this is pass readonly
           f r
-         // this is pass writeonly
+         // this is pass writeonly, only refs can be passed as writeonly
          f (&mut r)
          // this is ref write
          r := 1

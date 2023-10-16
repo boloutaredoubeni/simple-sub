@@ -28,6 +28,15 @@ end
    TODO: compilation to WASM and/or LLVM
 *)
 
+module Mutability = struct
+  module T = struct
+    type t = Mutable | Immutable | Reference [@@deriving compare, sexp]
+  end
+
+  include T
+  include Comparable.Make (T)
+end
+
 type t =
   | Uint of { value : int; span : (Span.span[@compare.ignore]) }
   | Ufloat of { value : float; span : (Span.span[@compare.ignore]) }
@@ -44,7 +53,7 @@ type t =
   | Utuple of { values : t list; span : (Span.span[@compare.ignore]) }
   | Uvector of {
       values : t list;
-      is_mutable : bool;
+      mutability : Mutability.t;
       span : (Span.span[@compare.ignore]);
     }
   | Uassign_subscript of {
@@ -80,7 +89,7 @@ type t =
   | Useq of { first : t; second : t; span : (Span.span[@compare.ignore]) }
   | Ulet of {
       binding : Symbol.t;
-      is_mutable : bool;
+      mutability : Mutability.t;
       value : t;
       app : t;
       span : (Span.span[@compare.ignore]);

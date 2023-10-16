@@ -494,7 +494,7 @@ module Tests = struct
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __3))))(rhs Ty_unit)) |}]
 
   (* let%expect_test "writeonly vector" =  *)
 

@@ -26,6 +26,7 @@ rule token = parse
 | "then" { THEN }
 | "else" { ELSE }
 | "mut" { MUT }
+| "ref" { REF }
 | "for" { FOR }
 | "do"  { DO }
 | "to" { TO }

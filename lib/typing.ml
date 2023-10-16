@@ -556,7 +556,7 @@ functor
             | _ -> assert false
           in
           Ttuple { first; second; rest; span }
-      | Uvector { values; span; is_mutable = false } ->
+      | Uvector { values; span; mutability = Mutability.Immutable } ->
           let values = List.map values ~f:(map_ast self) in
 
           let read = S.Fresh_var.f (Self.level self) in
@@ -567,7 +567,7 @@ functor
               { read = Some read; write = None; scope = Self.scope self }
           in
           Tvector { values; span; type' }
-      | Uvector { values; span; is_mutable = true } ->
+      | Uvector { values; span; mutability = Mutability.Mutable } ->
           let values = List.map values ~f:(map_ast self) in
           let write = S.Fresh_var.f (Self.level self) in
           let read = S.Fresh_var.f (Self.level self) in
@@ -576,6 +576,17 @@ functor
           let type' =
             Svector_type
               { read = Some read; write = Some write; scope = Self.scope self }
+          in
+          Tvector { values; span; type' }
+      | Uvector { values; span; mutability = Mutability.Reference } ->
+          let values = List.map values ~f:(map_ast self) in
+          let write = S.Fresh_var.f (Self.level self) in
+          let read = S.Fresh_var.f (Self.level self) in
+          List.iter values ~f:(fun value ->
+              constrain (Tast.T.type_of value) read);
+          let type' =
+            Svector_type
+              { read = Some read; write = Some write; scope = Scope.Global }
           in
           Tvector { values; span; type' }
       | Utuple_subscript { value; index; span } ->
@@ -616,6 +627,8 @@ functor
           let type' =
             let scheme = Self.find_exn self value in
             match TypeScheme.instantiate scheme (Self.level self) with
+            | Svector_type { scope = Scope.Global; write = Some write; _ } ->
+                write
             | Svector_type { scope; write = Some write; _ }
               when Scope.(scope = Self.scope self) ->
                 write
@@ -664,13 +677,13 @@ functor
       | Ulet
           {
             binding;
-            is_mutable = false;
+            mutability = Mutability.Immutable;
             value = Ulambda { closure };
             app;
             span;
           } ->
           map_ast self (Ulet_fun { name = binding; closure; app; span })
-      | Ulet { binding; is_mutable = true; value; app; span } ->
+      | Ulet { binding; mutability = Mutability.Mutable; value; app; span } ->
           let value = map_ast (Self.level_up self) value in
           let level = Self.level self in
           let type' = Tast.T.type_of value in
@@ -685,7 +698,7 @@ functor
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
           let type' = TypeScheme.instantiate scheme level in
           Tlet { binding = (binding, type'); value; app; span }
-      | Ulet { binding; value; app; span; is_mutable = false } ->
+      | Ulet { binding; value; app; span; mutability = Mutability.Immutable } ->
           let value = map_ast (Self.level_up self) value in
           let level = Self.level self in
           let type' = Tast.T.type_of value in
@@ -693,6 +706,8 @@ functor
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
           let type' = TypeScheme.instantiate scheme level in
           Tlet { binding = (binding, type'); value; app; span }
+      | Ulet { mutability = Mutability.Reference; _ } ->
+          failwith "let ref is not allowed yet"
       | Useq { first; second; span } ->
           let first = map_ast self first in
           let second = map_ast self second in
@@ -1003,7 +1018,7 @@ module Tests = struct
     run_it {|
        let xs = ref [| 0, 1|] in
        xs[0] = 1 |};
-    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+    [%expect {| Sunit_type |}]
 
   let%expect_test "readwrite vector, capture readonly" =
     run_it
@@ -1021,7 +1036,8 @@ module Tests = struct
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+    [%expect
+      {| (Svar_type(state(VariableState(name(Symbol __3))(level(Level(value 0)))(lower_bounds(Sunit_type))(upper_bounds())))) |}]
 
   (* let%expect_test "writeonly vector" =  *)
 

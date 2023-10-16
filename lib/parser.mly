@@ -6,7 +6,8 @@
 %token <int> INT
 %token <float> FLOAT
 %token <Text.Symbol.t> IDENT
-%token LET MUT
+%token LET 
+%token MUT REF
 %token EQUAL 
 %token LEFT_ARROW RIGHT_ARROW
 %token IN
@@ -47,9 +48,12 @@ simple_expr
     | value = simple_expr DOT field = IDENT { Uselect { value; field; span=Span.create $sloc } }
     | LBRACE fields = record_fields RBRACE { Urecord { fields; span=Span.create $sloc } }
     | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
-    | LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { is_mutable=false; values; span=Span.create $sloc } }
-    | MUT LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { is_mutable=true; values; span=Span.create $sloc } }
+    | mutability = mutability LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { mutability; values; span=Span.create $sloc } }
 
+mutability
+    : MUT { Mutability.Mutable }
+    | REF { Mutability.Reference }
+    | { Mutability.Immutable }
 
 expr
     : value = simple_expr { value }
@@ -91,8 +95,8 @@ expr
     | IF cond = expr THEN then_ = expr END { Uif_end { cond; then_; span=Span.create $sloc } }
     | IF cond = expr THEN then_ = expr ELSE else_ = expr { Uif { cond; then_; else_; span=Span.create $sloc } }
     | first = expr SEMICOLON second = expr { Useq { first; second; span=Span.create $sloc } }
-    | LET binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; is_mutable=false; value; app; span=Span.create $sloc } }
-    | LET MUT binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; is_mutable=true; value; app; span=Span.create $sloc } }
+    | LET binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Immutable; value; app; span=Span.create $sloc } }
+    | LET MUT binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Mutable; value; app; span=Span.create $sloc } }
     | LET name = IDENT parameter = IDENT RIGHT_ARROW value = expr IN app = expr { 
         Ulet_fun { 
             name; 
