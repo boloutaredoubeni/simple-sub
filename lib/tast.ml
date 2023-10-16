@@ -41,26 +41,12 @@ module rec Simple_type : sig
     | Sfloat_type
     | Sbool_type
     | Smutable of { read : t; write : t; scope : Scope.t }
+    | Sreference of { read : t option; write : t option; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
-      (* TODO: mutable types need 'read'/'write's
-         should vectors and references be limited by scope and readonly/writeonly?
-
-         i.e forall i. 0 <= i < n -> v[i]
-         // this readonly
-         let xs = [||] in
-         // this is local readwrite, global readonly
-         let xs = mut [||] in
-         // this is global readwrite
-         let xs = ref [||] in
-         // pass readonly
-          f xs
-         // this is pass readwrite, only refs can be passed as readwrite
-          f (&xs[..])
-         // this is pass writeonly, only refs can be passed as writeonly
-         f (&mut xs[..])
+      (* TODO: mutable types need 'read' or 'read/write's
 
          /// the  read/write reference version
          // this is local readwrite, global readonly
@@ -75,21 +61,6 @@ module rec Simple_type : sig
          r := 1
          // this is ref read
          *r OR ^r or @r // *r is the most common and preferred
-
-
-         /// state vars, similar to useState hooks in react
-         // this is user defined readwrite rules
-         var set_x get_x = ... in
-         // this is readonly
-         ..x..
-         // this is write only
-         set_x 1
-         // this is pass readwrite
-         f (x, set_x)
-         // this is pass readonly
-         f x
-         // this is pass writeonly
-         f set_x
       *)
     | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
@@ -104,6 +75,7 @@ end = struct
     | Sfloat_type
     | Sbool_type
     | Smutable of { read : t; write : t; scope : Scope.t }
+    | Sreference of { read : t option; write : t option; scope : Scope.t }
     | Sfunction_type of { argument : t; result : t }
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
@@ -123,7 +95,7 @@ end = struct
     | Stuple_type { first; second; rest } ->
         List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
             Level.max acc (level t))
-    | Svector_type { read; write; _ } ->
+    | Svector_type { read; write; _ } | Sreference { read; write; _ } ->
         List.fold [ read; write ] ~init:Level.default ~f:(fun acc -> function
           | None -> acc | Some t -> Level.max acc (level t))
     | Srecord { fields } ->
@@ -344,6 +316,16 @@ module rec T : sig
         new_value : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tderef of {
+        name : Symbol.t;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
+    | Tupdate_ref of {
+        name : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
     | Trecord of {
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
@@ -448,6 +430,16 @@ end = struct
         new_value : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tderef of {
+        name : Symbol.t;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
+    | Tupdate_ref of {
+        name : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
     | Trecord of {
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
@@ -510,7 +502,7 @@ end = struct
           }
     | Tvector { type'; _ } -> type'
     | Ttuple_subscript { type'; _ } | Tsubscript { type'; _ } -> type'
-    | Tassign _ | Tassign_subscript _ | Tunit _ -> Sunit_type
+    | Tassign _ | Tassign_subscript _ | Tunit _ | Tupdate_ref _ -> Sunit_type
     | Trecord { fields; _ } ->
         Srecord { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
     | Tlambda { closure } -> Closure.type_of closure
@@ -521,6 +513,7 @@ end = struct
     | Tprimop { type'; _ }
     | Tif { type'; _ }
     | Tif_end { type'; _ }
+    | Tderef { type'; _ }
     | Tfor { type'; _ } ->
         type'
 
@@ -540,6 +533,8 @@ end = struct
       | Tsubscript { span; _ }
       | Tassign { span; _ }
       | Tassign_subscript { span; _ }
+      | Tderef { span; _ }
+      | Tupdate_ref { span; _ }
       | Trecord { span; _ }
       | Tselect { span; _ }
       | Tlet { span; _ }

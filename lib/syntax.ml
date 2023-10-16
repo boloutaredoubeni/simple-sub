@@ -21,8 +21,9 @@ module Op = struct
 end
 
 (*
-   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction
-   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting, iterators, break, contnue, return, yield, mutable vs immutable strings, state vars, arrays of fixed length, slices
+   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction, type annotation
+   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting, iterators, break, contnue, return, yield, mutable vs immutable strings, state vars, arrays of fixed length, slices, subsumption checking for polymorphic annotations
+   TODO: more advanced type simplification, type monomorphization, pattern match compilation
    TODO: delimited ir
    TODO: ownership based reference counting
    TODO: compilation to WASM and/or LLVM
@@ -31,6 +32,15 @@ end
 module Mutability = struct
   module T = struct
     type t = Mutable | Immutable | Reference [@@deriving compare, sexp]
+  end
+
+  include T
+  include Comparable.Make (T)
+end
+
+module Readability = struct
+  module T = struct
+    type t = Readonly | Writeonly | ReadWrite [@@deriving compare, sexp]
   end
 
   include T
@@ -56,6 +66,11 @@ type t =
       mutability : Mutability.t;
       span : (Span.span[@compare.ignore]);
     }
+  | Uslice of {
+      value : Symbol.t;
+      readability : Readability.t;
+      span : (Span.span[@compare.ignore]);
+    }
   | Uassign_subscript of {
       value : Symbol.t;
       index : t;
@@ -63,6 +78,12 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Uassign of {
+      name : Symbol.t;
+      value : t;
+      span : (Span.span[@compare.ignore]);
+    }
+  | Uderef of { name : Symbol.t; span : (Span.span[@compare.ignore]) }
+  | Uupdate_ref of {
       name : Symbol.t;
       value : t;
       span : (Span.span[@compare.ignore]);
@@ -156,6 +177,7 @@ module Spanned : Span.SPANNED = struct
     | Urecord { span; _ }
     | Utuple { span; _ }
     | Uvector { span; _ }
+    | Uslice { span; _ }
     | Utuple_subscript { span; _ }
     | Usubscript { span; _ }
     | Uselect { span; _ }
@@ -170,6 +192,8 @@ module Spanned : Span.SPANNED = struct
     | Uif { span; _ }
     | Useq { span; _ }
     | Uassign { span; _ }
+    | Uderef { span; _ }
+    | Uupdate_ref { span; _ }
     | Uassign_subscript { span; _ } ->
         span
 end

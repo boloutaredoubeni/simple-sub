@@ -60,19 +60,40 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let value = map_ast self value in
         let type' = map_type self type' in
         Ltuple_subscript { value; index; span; type' }
-    | Tsubscript { value; index; span; type' } ->
-        let index = map_ast self index in
-        let type' = map_type self type' in
-        Lsubscript { value; index; span; type' }
-    | Tassign { name = name, type'; value; span } ->
-        let value = map_ast self value in
-        let type' = map_type self type' in
-        Lassign { name = (name, type'); value; span }
-    | Tassign_subscript { new_value; index; value; span } ->
-        let new_value = map_ast self new_value in
-        let index = map_ast self index in
+    | Tsubscript { value; index; span; type' } -> (
+        match Type_env.find self value with
+        | None -> failwith "unbound var"
+        | Some _ ->
+            let index = map_ast self index in
+            let type' = map_type self type' in
+            Lsubscript { value; index; span; type' })
+    | Tassign { name = name, type'; value; span } -> (
+        match Type_env.find self name with
+        | None -> failwith "unbound var"
+        | Some _ ->
+            let value = map_ast self value in
+            let type' = map_type self type' in
+            Lassign { name = (name, type'); value; span })
+    | Tassign_subscript { new_value; index; value; span } -> (
+        match Type_env.find self value with
+        | None -> failwith "unbound var"
+        | Some _ ->
+            let new_value = map_ast self new_value in
+            let index = map_ast self index in
 
-        Lassign_subscript { new_value; index; value; span }
+            Lassign_subscript { new_value; index; value; span })
+    | Tupdate_ref { name; value; span } -> (
+        match Type_env.find self name with
+        | None -> failwith "unbound var"
+        | Some _ ->
+            let value = map_ast self value in
+            Lupdate_ref { name; value; span })
+    | Tderef { name; span; type' } -> (
+        match Type_env.find self name with
+        | None -> failwith "unbound var"
+        | Some _ ->
+            let type' = map_type self type' in
+            Lderef { name; span; type' })
     | Trecord { fields; span } ->
         let fields =
           List.map fields ~f:(fun (name, t) ->
@@ -268,6 +289,29 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
             {
               element = f (Polar.Type.create write (Polar.not polar)) in_process;
             }
+      | PolarType
+          {
+            type' = Sreference { read = Some read; write = Some write; _ };
+            polar;
+          } ->
+          let read = Polar.Type.create read polar in
+          let write = Polar.Type.create write (Polar.not polar) in
+          let read = f read in_process in
+          let write = f write in_process in
+          Ty_reference { read; write }
+      | PolarType { type' = Sreference { read = None; write = None; _ }; _ } ->
+          failwith "vector type not supported yet"
+      | PolarType
+          { type' = Sreference { read = Some read; write = None; _ }; polar } ->
+          Ty_readonly_reference
+            { element = f (Polar.Type.create read polar) in_process }
+      | PolarType
+          { type' = Sreference { read = None; write = Some write; _ }; polar }
+        ->
+          Ty_writeonly_reference
+            {
+              element = f (Polar.Type.create write (Polar.not polar)) in_process;
+            }
       | PolarType { type' = Srecord { fields }; polar } ->
           let fields =
             List.map fields ~f:(fun (name, t) ->
@@ -458,7 +502,7 @@ module Tests = struct
     [%expect
       {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)))) |}]
 
-  let%expect_test "heterogeneous vector" =
+  let%expect_test "union vector" =
     run_it "[| 1, true |]";
     [%expect
       {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)))(rhs Ty_int)))) |}]
@@ -467,7 +511,7 @@ module Tests = struct
     run_it {| let xs = [| 1, 2 |] in xs[0] |};
     [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
 
-  let%expect_test "heterogeneous vector subscript" =
+  let%expect_test "union vector subscript" =
     run_it {| let xs = [| 1, true |] in xs[0] |};
     [%expect
       {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_bool)) |}]
@@ -496,7 +540,65 @@ module Tests = struct
        f 1|};
     [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __3))))(rhs Ty_unit)) |}]
 
-  (* let%expect_test "writeonly vector" =  *)
+  let%expect_test "reference vectors can be readonly" =
+    run_it {|
+      let xs = ref [| 0, 1|] in
+      &xs[..] |};
+    [%expect
+      {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_int)))) |}]
+
+  let%expect_test "reference vectors can be writeonly" =
+    run_it {|
+      let xs = ref [| 0, 1|] in
+      &mut xs[..] |};
+    [%expect
+      {| (Ty_writeonly_vector(element(Ty_variable(name(Symbol __0))))) |}]
+
+  let%expect_test "readonly vectors can be read" =
+    run_it
+      {|
+      let xs = ref [| 0, 1|] in
+      let ys = &xs[..] in
+      ys[1] |};
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+
+  let%expect_test "writeonly vectors be written" =
+    run_it
+      {|
+      let xs = ref [| 0, 1|] in
+      let ys = &mut xs[..] in
+      ys[1] = 10 |};
+    [%expect {| Ty_unit |}]
+
+  let%expect_test "let ref" =
+    run_it "let ref a = 0 in a";
+    [%expect
+      {| (Ty_reference(read(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(write(Ty_variable(name(Symbol __1))))) |}]
+
+  let%expect_test "let ref update" =
+    run_it "let ref a = 0 in a := 1";
+    [%expect {| Ty_unit |}]
+
+  let%expect_test "let ref deref" =
+    run_it "let ref a = 0 in !a";
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+
+  let%expect_test "let ref update union" =
+    run_it {|
+      let ref a = 0 in
+      a := 1.0;
+      a
+    |};
+    [%expect
+      {| (Ty_reference(read(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(write(Ty_variable(name(Symbol __1))))) |}]
+
+  let%expect_test "let ref deref union" =
+    run_it {|
+      let ref a = 0 in
+      a := 1.0;
+      !a
+    |};
+    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";

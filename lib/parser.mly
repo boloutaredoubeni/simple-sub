@@ -8,11 +8,13 @@
 %token <Text.Symbol.t> IDENT
 %token LET 
 %token MUT REF
+%token COLON_EQUAL BANG
 %token EQUAL 
 %token LEFT_ARROW RIGHT_ARROW
 %token IN
 %token DEF FN
-%token DOT
+%token AMPERSAND
+%token DOT DOT_DOT
 %token TO DOWNTO
 %token LBRACE RBRACE
 %token LPAREN RPAREN
@@ -49,15 +51,23 @@ simple_expr
     | LBRACE fields = record_fields RBRACE { Urecord { fields; span=Span.create $sloc } }
     | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
     | mutability = mutability LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { mutability; values; span=Span.create $sloc } }
+    | readability = readability value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability; value; span=Span.create $sloc } }
+    | name = IDENT COLON_EQUAL value = simple_expr { Uupdate_ref { name; value; span=Span.create $sloc } }
 
 mutability
     : MUT { Mutability.Mutable }
     | REF { Mutability.Reference }
     | { Mutability.Immutable }
 
+readability
+    : AMPERSAND { Readability.Readonly }
+    | AMPERSAND MUT { Readability.Writeonly }
+  
+
 expr
     : value = simple_expr { value }
     | fn = simple_expr value = expr  { Uapp{ fn; value; span=Span.create $sloc } }
+    | BANG name = IDENT { Uderef { name; span=Span.create $sloc } }
     | MINUS value = expr {
         match value with
         | Uint { value; span } -> Uint { value=(-value); span }   
@@ -97,6 +107,7 @@ expr
     | first = expr SEMICOLON second = expr { Useq { first; second; span=Span.create $sloc } }
     | LET binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Immutable; value; app; span=Span.create $sloc } }
     | LET MUT binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Mutable; value; app; span=Span.create $sloc } }
+    | LET REF binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Reference; value; app; span=Span.create $sloc } }
     | LET name = IDENT parameter = IDENT RIGHT_ARROW value = expr IN app = expr { 
         Ulet_fun { 
             name; 

@@ -14,6 +14,9 @@ module Type = struct
       | Ty_vector of { read : t; write : t }
       | Ty_readonly_vector of { element : t }
       | Ty_writeonly_vector of { element : t }
+      | Ty_reference of { read : t; write : t }
+      | Ty_readonly_reference of { element : t }
+      | Ty_writeonly_reference of { element : t }
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
@@ -43,6 +46,12 @@ module Type = struct
           "readonly vector[" ^ to_string element ^ "]"
       | Ty_writeonly_vector { element } ->
           "writeonly vector[" ^ to_string element ^ "]"
+      | Ty_reference { read; write } ->
+          "reference[+" ^ to_string read ^ ", -" ^ to_string write ^ "]"
+      | Ty_readonly_reference { element } ->
+          "readonly reference[" ^ to_string element ^ "]"
+      | Ty_writeonly_reference { element } ->
+          "writeonly reference[" ^ to_string element ^ "]"
       | Ty_record { fields } ->
           let fields =
             List.map fields ~f:(fun (name, type') ->
@@ -117,6 +126,16 @@ module rec T : sig
         value : Symbol.t;
         index : t;
         new_value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lderef of {
+        name : Symbol.t;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Lupdate_ref of {
+        name : Symbol.t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
     | Lrecord of {
@@ -216,6 +235,16 @@ end = struct
         new_value : t;
         span : (Span.span[@compare.ignore]);
       }
+    | Lderef of {
+        name : Symbol.t;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Lupdate_ref of {
+        name : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
     | Lrecord of {
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
@@ -261,7 +290,7 @@ end = struct
     | Lint _ -> Ty_int
     | Lfloat _ -> Ty_float
     | Lbool _ -> Ty_bool
-    | Lunit _ | Lassign _ | Lassign_subscript _ -> Ty_unit
+    | Lunit _ | Lassign _ | Lassign_subscript _ | Lupdate_ref _ -> Ty_unit
     | Lvar { type'; _ } -> type'
     | Ltuple { first; second; rest; _ } ->
         Ty_tuple
@@ -280,6 +309,7 @@ end = struct
     | Lselect { type'; _ } -> type'
     | Lapp { type'; _ } -> type'
     | Ldef { app; _ } -> type_of app
+    | Lderef { type'; _ } -> type'
     | Lprimop { type'; _ } -> type'
     | Lif { type'; _ } -> type'
     | Lfor { type'; _ } -> type'
@@ -300,6 +330,8 @@ end = struct
       | Lsubscript { span; _ }
       | Lassign { span; _ }
       | Lassign_subscript { span; _ }
+      | Lderef { span; _ }
+      | Lupdate_ref { span; _ }
       | Lrecord { span; _ }
       | Lselect { span; _ }
       | Llet { span; _ }

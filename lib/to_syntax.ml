@@ -159,7 +159,7 @@ module Tests = struct
     [%expect
       {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(mutability Immutable)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
 
-  let%expect_test "heterogeneous vector" =
+  let%expect_test "union vector" =
     run_it "[| 1, true |]";
     [%expect
       {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Ubool(value true)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10))))))))(mutability Immutable)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
@@ -203,6 +203,16 @@ module Tests = struct
     [%expect
       {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Uvector(values((Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 25))))))(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28))))))))(mutability Reference)(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 30)))))))(app(Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 55)))(finish(Position(line 1)(column 56)))))))(new_value(Uvar(value(Symbol x))(span(Span(filename"")(start(Position(line 1)(column 60)))(finish(Position(line 1)(column 61)))))))(span(Span(filename"")(start(Position(line 1)(column 52)))(finish(Position(line 1)(column 61)))))))(span(Span(filename"")(start(Position(line 1)(column 45)))(finish(Position(line 1)(column 52)))))))(app(Useq(first(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 75)))(finish(Position(line 1)(column 76)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 80)))(finish(Position(line 1)(column 81)))))))(span(Span(filename"")(start(Position(line 1)(column 72)))(finish(Position(line 1)(column 81)))))))(second(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename"")(start(Position(line 1)(column 90)))(finish(Position(line 1)(column 91)))))))(value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 92)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 90)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 72)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 41)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 93)))))) |}]
 
+  let%expect_test "borrow readonly vector" =
+    run_it "&xs[..]";
+    [%expect
+      {| (Uslice(value(Symbol xs))(readability Readonly)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 7)))))) |}]
+
+  let%expect_test "borrow readwrite vector" =
+    run_it "&mut xs[..]";
+    [%expect
+      {| (Uslice(value(Symbol xs))(readability Writeonly)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 11)))))) |}]
+
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
     [%expect
@@ -227,6 +237,21 @@ module Tests = struct
     run_it "let mut a = 0 in a = 1";
     [%expect
       {| (Ulet(binding(Symbol a))(mutability Mutable)(value(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 12)))(finish(Position(line 1)(column 13)))))))(app(Uassign(name(Symbol a))(value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 21)))(finish(Position(line 1)(column 22)))))))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 22)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 22)))))) |}]
+
+  let%expect_test "let ref" =
+    run_it "let ref a = 0 in a";
+    [%expect
+      {| (Ulet(binding(Symbol a))(mutability Reference)(value(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 12)))(finish(Position(line 1)(column 13)))))))(app(Uvar(value(Symbol a))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 18)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 18)))))) |}]
+
+  let%expect_test "ref update" =
+    run_it "a := 1";
+    [%expect
+      {| (Uupdate_ref(name(Symbol a))(value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 5)))(finish(Position(line 1)(column 6)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))) |}]
+
+  let%expect_test "deref" =
+    run_it "!a";
+    [%expect
+      {| (Uderef(name(Symbol a))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};

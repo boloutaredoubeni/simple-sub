@@ -32,6 +32,11 @@ module Span = struct
     | Span of { filename : string; start : Position.t; finish : Position.t }
   [@@deriving sexp, compare, equal]
 
+  let to_string (Span { filename; start; finish }) =
+    Printf.sprintf "file %s, start %s, finish %s" filename
+      (Position.to_string start)
+      (Position.to_string finish)
+
   module type SPANNED = sig
     type t
 

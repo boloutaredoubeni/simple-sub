@@ -43,9 +43,12 @@ rule token = parse
 | "|]" { RBRACKET_BAR }
 | "[" { LBRACKET }
 | "]" { RBRACKET }
+| "&" { AMPERSAND }
+| ":=" { COLON_EQUAL }
+| "!" { BANG }
+| ".." { DOT_DOT }
 | "." { DOT }
 | "," { COMMA }
-(* FIXME: these operators are for INTEGER math, use dot operators for floats *)
 | "+" { PLUS }
 | "-" { MINUS }
 | "*" { STAR }
