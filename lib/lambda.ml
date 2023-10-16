@@ -97,7 +97,7 @@ module rec T : sig
         type' : Type.t;
       }
     | Lsubscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
@@ -114,7 +114,7 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Lassign_subscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         new_value : t;
         span : (Span.span[@compare.ignore]);
@@ -194,7 +194,7 @@ end = struct
         type' : Type.t;
       }
     | Lsubscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
@@ -211,7 +211,7 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Lassign_subscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         new_value : t;
         span : (Span.span[@compare.ignore]);

@@ -152,22 +152,56 @@ module Tests = struct
   let%expect_test "empty vector" =
     run_it "[||]";
     [%expect
-      {| (Uvector(values())(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
+      {| (Uvector(values())(is_mutable false)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
+      {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(is_mutable false)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
 
   let%expect_test "heterogeneous vector" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Ubool(value true)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
+      {| (Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Ubool(value true)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10))))))))(is_mutable false)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
 
   let%expect_test "vector subscript" =
-    run_it "[| 1, 2 |][0]";
+    run_it {| let xs = [| 1, 2 |] in xs[0] |};
     [%expect
-      {| (Usubscript(value(Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 11)))(finish(Position(line 1)(column 12)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
+      {| (Ulet(binding(Symbol xs))(is_mutable false)(value(Uvector(values((Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 13)))(finish(Position(line 1)(column 14))))))(Uint(value 2)(span(Span(filename"")(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 17))))))))(is_mutable false)(span(Span(filename"")(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 20)))))))(app(Usubscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28)))))))(span(Span(filename"")(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 29)))))))(span(Span(filename"")(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 29)))))) |}]
+
+  let%expect_test "local readwrite vector" =
+    run_it {|
+       let xs = mut [| 0, 1|] in
+       xs[0] = 1 |};
+    [%expect
+      {| (Ulet(binding(Symbol xs))(is_mutable false)(value(Uvector(values((Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 25))))))(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28))))))))(is_mutable true)(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 30)))))))(app(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 44)))(finish(Position(line 1)(column 45)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 49)))(finish(Position(line 1)(column 50)))))))(span(Span(filename"")(start(Position(line 1)(column 41)))(finish(Position(line 1)(column 50)))))))(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 50)))))) |}]
+
+  let%expect_test "readwrite vector, no passing" =
+    run_it {|
+       let xs = ref [| 0, 1|] in
+       xs[0] = 1 |};
+    [%expect
+      {| (Ulet(binding(Symbol xs))(is_mutable false)(value(Uapp(fn(Uvar(value(Symbol ref))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 20)))))))(value(Uvector(values((Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 25))))))(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28))))))))(is_mutable false)(span(Span(filename"")(start(Position(line 1)(column 21)))(finish(Position(line 1)(column 30)))))))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 30)))))))(app(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 44)))(finish(Position(line 1)(column 45)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 49)))(finish(Position(line 1)(column 50)))))))(span(Span(filename"")(start(Position(line 1)(column 41)))(finish(Position(line 1)(column 50)))))))(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 50)))))) |}]
+
+  let%expect_test "readwrite vector, capture readonly" =
+    run_it
+      {|
+       let xs = mut [| 0, 1|] in
+       let f x -> xs[0] = x in
+       xs[0] = 1;
+       f 1|};
+    [%expect
+      {| (Ulet(binding(Symbol xs))(is_mutable false)(value(Uvector(values((Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 25))))))(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28))))))))(is_mutable true)(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 30)))))))(app(Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 55)))(finish(Position(line 1)(column 56)))))))(new_value(Uvar(value(Symbol x))(span(Span(filename"")(start(Position(line 1)(column 60)))(finish(Position(line 1)(column 61)))))))(span(Span(filename"")(start(Position(line 1)(column 52)))(finish(Position(line 1)(column 61)))))))(span(Span(filename"")(start(Position(line 1)(column 45)))(finish(Position(line 1)(column 52)))))))(app(Useq(first(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 75)))(finish(Position(line 1)(column 76)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 80)))(finish(Position(line 1)(column 81)))))))(span(Span(filename"")(start(Position(line 1)(column 72)))(finish(Position(line 1)(column 81)))))))(second(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename"")(start(Position(line 1)(column 90)))(finish(Position(line 1)(column 91)))))))(value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 92)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 90)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 72)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 41)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 93)))))) |}]
+
+  let%expect_test "readwrite vector, capture readwrite" =
+    run_it
+      {|
+       let xs = ref [| 0, 1|] in
+       let f x -> xs[0] = x in
+       xs[0] = 1;
+       f 1|};
+    [%expect
+      {| (Ulet(binding(Symbol xs))(is_mutable false)(value(Uapp(fn(Uvar(value(Symbol ref))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 20)))))))(value(Uvector(values((Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 25))))))(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28))))))))(is_mutable false)(span(Span(filename"")(start(Position(line 1)(column 21)))(finish(Position(line 1)(column 30)))))))(span(Span(filename"")(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 30)))))))(app(Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 55)))(finish(Position(line 1)(column 56)))))))(new_value(Uvar(value(Symbol x))(span(Span(filename"")(start(Position(line 1)(column 60)))(finish(Position(line 1)(column 61)))))))(span(Span(filename"")(start(Position(line 1)(column 52)))(finish(Position(line 1)(column 61)))))))(span(Span(filename"")(start(Position(line 1)(column 45)))(finish(Position(line 1)(column 52)))))))(app(Useq(first(Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 75)))(finish(Position(line 1)(column 76)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 80)))(finish(Position(line 1)(column 81)))))))(span(Span(filename"")(start(Position(line 1)(column 72)))(finish(Position(line 1)(column 81)))))))(second(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename"")(start(Position(line 1)(column 90)))(finish(Position(line 1)(column 91)))))))(value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 92)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 90)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 72)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 41)))(finish(Position(line 1)(column 93)))))))(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 93)))))) |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
@@ -182,7 +216,7 @@ module Tests = struct
   let%expect_test "vector update" =
     run_it "xs[0] = 1";
     [%expect
-      {| (Uassign_subscript(value(Uvar(value(Symbol xs))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
+      {| (Uassign_subscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename"")(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))(new_value(Uint(value 1)(span(Span(filename"")(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9)))))))(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
 
   let%expect_test "seq" =
     run_it "1; 2";

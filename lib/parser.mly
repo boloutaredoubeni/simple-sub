@@ -40,14 +40,16 @@ simple_expr
     | TRUE { Ubool { value=true; span=Span.create $sloc } }
     | FALSE { Ubool { value=false; span=Span.create $sloc } }
     | value = IDENT { Uvar { value; span=Span.create $sloc } }
-    | value = simple_expr LBRACKET index = expr RBRACKET { Usubscript { value; index; span=Span.create $sloc } }  
-    | name = IDENT EQUAL value=expr { Uassign { name; value; span=Span.create $sloc } }
-    | value = simple_expr LBRACKET index = expr RBRACKET EQUAL new_value = expr { Uassign_subscript { value; index; new_value; span=Span.create $sloc } }
+    | value = IDENT LBRACKET index = expr RBRACKET { Usubscript { value; index; span=Span.create $sloc } }  
+    | name = IDENT EQUAL value = expr { Uassign { name; value; span=Span.create $sloc } }
+    | value = IDENT LBRACKET index = expr RBRACKET EQUAL new_value = simple_expr { Uassign_subscript { value; index; new_value; span=Span.create $sloc } }
     | value = simple_expr DOT index = INT { Utuple_subscript { value; index; span=Span.create $sloc } }
     | value = simple_expr DOT field = IDENT { Uselect { value; field; span=Span.create $sloc } }
     | LBRACE fields = record_fields RBRACE { Urecord { fields; span=Span.create $sloc } }
     | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
-    | LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { values; span=Span.create $sloc } }
+    | LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { is_mutable=false; values; span=Span.create $sloc } }
+    | MUT LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { is_mutable=true; values; span=Span.create $sloc } }
+
 
 expr
     : value = simple_expr { value }
@@ -124,7 +126,7 @@ record_fields
     : fields = separated_nonempty_list(COMMA, record_field) { fields }
 
 record_field
-    : field = IDENT EQUAL value = expr { (field, value) }
+    : field = IDENT EQUAL value = simple_expr { (field, value) }
 
 elements
     : separated_list(COMMA, expr) { $1 }

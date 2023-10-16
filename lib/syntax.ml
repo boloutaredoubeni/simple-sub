@@ -42,9 +42,13 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Utuple of { values : t list; span : (Span.span[@compare.ignore]) }
-  | Uvector of { values : t list; span : (Span.span[@compare.ignore]) }
+  | Uvector of {
+      values : t list;
+      is_mutable : bool;
+      span : (Span.span[@compare.ignore]);
+    }
   | Uassign_subscript of {
-      value : t;
+      value : Symbol.t;
       index : t;
       new_value : t;
       span : (Span.span[@compare.ignore]);
@@ -59,7 +63,11 @@ type t =
       index : int;
       span : (Span.span[@compare.ignore]);
     }
-  | Usubscript of { value : t; index : t; span : (Span.span[@compare.ignore]) }
+  | Usubscript of {
+      value : Symbol.t;
+      index : t;
+      span : (Span.span[@compare.ignore]);
+    }
   | Urecord of {
       fields : (Symbol.t * t) list;
       span : (Span.span[@compare.ignore]);

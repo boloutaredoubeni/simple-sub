@@ -87,7 +87,7 @@ module rec Simple_type : sig
          // this is pass writeonly
          f set_x
       *)
-    | Svector_type of { read : t option; write : t option }
+    | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -104,7 +104,7 @@ end = struct
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
-    | Svector_type of { read : t option; write : t option }
+    | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
@@ -119,7 +119,7 @@ end = struct
     | Stuple_type { first; second; rest } ->
         List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
             Level.max acc (level t))
-    | Svector_type { read; write } ->
+    | Svector_type { read; write; _ } ->
         List.fold [ read; write ] ~init:Level.default ~f:(fun acc -> function
           | None -> acc | Some t -> Level.max acc (level t))
     | Srecord { fields } ->
@@ -324,7 +324,7 @@ module rec T : sig
         type' : Simple_type.t;
       }
     | Tsubscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
@@ -335,7 +335,7 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Tassign_subscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         new_value : t;
         span : (Span.span[@compare.ignore]);
@@ -428,7 +428,7 @@ end = struct
         type' : Simple_type.t;
       }
     | Tsubscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
@@ -439,7 +439,7 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Tassign_subscript of {
-        value : t;
+        value : Symbol.t;
         index : t;
         new_value : t;
         span : (Span.span[@compare.ignore]);

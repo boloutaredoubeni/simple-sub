@@ -61,7 +61,6 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let type' = map_type self type' in
         Ltuple_subscript { value; index; span; type' }
     | Tsubscript { value; index; span; type' } ->
-        let value = map_ast self value in
         let index = map_ast self index in
         let type' = map_type self type' in
         Lsubscript { value; index; span; type' }
@@ -72,7 +71,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tassign_subscript { new_value; index; value; span } ->
         let new_value = map_ast self new_value in
         let index = map_ast self index in
-        let value = map_ast self value in
+
         Lassign_subscript { new_value; index; value; span }
     | Trecord { fields; span } ->
         let fields =
@@ -246,7 +245,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           Ty_tuple { first; second; rest }
       | PolarType
           {
-            type' = Svector_type { read = Some read; write = Some write };
+            type' = Svector_type { read = Some read; write = Some write; _ };
             polar;
           } ->
           let read = Polar.Type.create read polar in
@@ -254,14 +253,17 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let read = f read in_process in
           let write = f write in_process in
           Ty_vector { read; write }
-      | PolarType { type' = Svector_type { read = None; write = None }; _ } ->
+      | PolarType { type' = Svector_type { read = None; write = None; _ }; _ }
+        ->
           failwith "vector type not supported yet"
       | PolarType
-          { type' = Svector_type { read = Some read; write = None }; polar } ->
+          { type' = Svector_type { read = Some read; write = None; _ }; polar }
+        ->
           Ty_readonly_vector
             { element = f (Polar.Type.create read polar) in_process }
       | PolarType
-          { type' = Svector_type { read = None; write = Some write }; polar } ->
+          { type' = Svector_type { read = None; write = Some write; _ }; polar }
+        ->
           Ty_writeonly_vector
             {
               element = f (Polar.Type.create write (Polar.not polar)) in_process;
@@ -462,44 +464,39 @@ module Tests = struct
       {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)))(rhs Ty_int)))) |}]
 
   let%expect_test "vector subscript" =
-    run_it "[| 1, 2 |][0]";
+    run_it {| let xs = [| 1, 2 |] in xs[0] |};
     [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
 
   let%expect_test "heterogeneous vector subscript" =
-    run_it "[| true, 2 |][0]";
+    run_it {| let xs = [| 1, true |] in xs[0] |};
     [%expect
-      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_bool)))(rhs Ty_int)) |}]
+      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_bool)) |}]
 
-  (* let%expect_test "local readwrite vector" =
-     run_it {|
+  let%expect_test "local readwrite vector" =
+    run_it {|
        let xs = mut [| 0, 1|] in
        xs[0] = 1 |};
-     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+    [%expect {| Ty_unit |}]
 
-         let%expect_test "readwrite vector, no passing" =
-     run_it {|
-       let xs = ref [| 0, 1|] in
-       xs[0] = 1 |};
-     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
-
-         let%expect_test "readwrite vector, capture readonly" =
-     run_it {|
+  let%expect_test "readwrite vector, capture readonly" =
+    run_it
+      {|
        let xs = mut [| 0, 1|] in
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+    [%expect {| ("Fx__Typing.Captured_mutable(_, _)") |}]
 
-     let%expect_test "readwrite vector, capture readwrite" =
-     run_it {|
+  let%expect_test "readwrite vector, capture readwrite" =
+    run_it
+      {|
        let xs = ref [| 0, 1|] in
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
-
-     let%expect_test "writeonly vector" = *)
+  (* let%expect_test "writeonly vector" =  *)
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
