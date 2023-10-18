@@ -18,20 +18,48 @@ module Op = struct
     | FMul
     | FDiv
   [@@deriving compare, sexp]
+
+  let to_string = function
+    | Add -> "+"
+    | Sub -> "-"
+    | Mul -> "*"
+    | Div -> "/"
+    | Eq -> "=="
+    | Neq -> "!="
+    | Lt -> "<"
+    | Gt -> ">"
+    | Leq -> "<="
+    | Geq -> ">="
+    | FAdd -> "+."
+    | FSub -> "-."
+    | FMul -> "*."
+    | FDiv -> "/."
 end
 
 (*
-   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, strings, record extension/contraction, type annotation
-   TODO: continuation based concurrency, interfaces, error/exceptions, tensors, suspend/resume continuations, typecasting, iterators, break, contnue, return, yield, mutable vs immutable strings, state vars, arrays of fixed length, slices, subsumption checking for polymorphic annotations
+   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, mutable vs immutable strings, character, row polymorhism?, mutable records, type annotation, let tuple, let record, 
+   TODO: fiber and events, error propagation handling/overflow checks (errors must be matched or rethrown), fiber handlers,  typecasting,, slices, maps, sets, sequences, for comprehensions, early return, break, continue
    TODO: more advanced type simplification, type monomorphization, pattern match compilation
    TODO: delimited ir
    TODO: ownership based reference counting
-   TODO: compilation to WASM and/or LLVM
+   TODO: session types and protocols, threads/futures, channels, tensors, subsumption checking for polymorphic annotations, trailing closures
+   TODO: tree walk eval
+
+   NOTE: subtyping may solve the function color problem
+   NOTE: continuations vs coroutines vs fibers
 *)
 
+(* TODO: this are binding types *)
 module Mutability = struct
   module T = struct
-    type t = Mutable | Immutable | Reference [@@deriving compare, sexp]
+    type t = Mutable | Immutable | Reference | MutableReference
+    [@@deriving compare, sexp]
+
+    let to_string = function
+      | Mutable -> "mut"
+      | Immutable -> ""
+      | Reference -> "ref"
+      | MutableReference -> "ref mut"
   end
 
   include T
@@ -40,7 +68,13 @@ end
 
 module Readability = struct
   module T = struct
-    type t = Readonly | Writeonly | ReadWrite [@@deriving compare, sexp]
+    type t = Readonly | Writeonly | ReadWrite
+    [@@deriving compare, sexp, equal]
+
+    let to_string = function
+      | Readonly -> ""
+      | Writeonly -> failwith "writeonly not implemented"
+      | ReadWrite -> "&mut"
   end
 
   include T
@@ -72,9 +106,9 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Uassign_subscript of {
-      value : Symbol.t;
+      name : Symbol.t;
       index : t;
-      new_value : t;
+      value : t;
       span : (Span.span[@compare.ignore]);
     }
   | Uassign of {
@@ -88,6 +122,7 @@ type t =
       value : t;
       span : (Span.span[@compare.ignore]);
     }
+  | Umutable_ref of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
   | Utuple_subscript of {
       value : t;
       index : int;
@@ -162,7 +197,7 @@ and iterate =
   | Udone
 [@@deriving compare, sexp]
 
-let default = Uint { value = 0; span = Span.default }
+let default = Utuple { values = []; span = Span.default }
 let to_sexp_string t = Sexp.to_string (sexp_of_t t)
 
 module Spanned : Span.SPANNED = struct
@@ -194,6 +229,7 @@ module Spanned : Span.SPANNED = struct
     | Uassign { span; _ }
     | Uderef { span; _ }
     | Uupdate_ref { span; _ }
+    | Umutable_ref { span; _ }
     | Uassign_subscript { span; _ } ->
         span
 end

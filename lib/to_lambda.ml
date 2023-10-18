@@ -74,14 +74,14 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
             let value = map_ast self value in
             let type' = map_type self type' in
             Lassign { name = (name, type'); value; span })
-    | Tassign_subscript { new_value; index; value; span } -> (
-        match Type_env.find self value with
+    | Tassign_subscript { name; index; value; span } -> (
+        match Type_env.find self name with
         | None -> failwith "unbound var"
         | Some _ ->
-            let new_value = map_ast self new_value in
+            let value = map_ast self value in
             let index = map_ast self index in
 
-            Lassign_subscript { new_value; index; value; span })
+            Lassign_subscript { name; index; value; span })
     | Tupdate_ref { name; value; span } -> (
         match Type_env.find self name with
         | None -> failwith "unbound var"
@@ -144,12 +144,6 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let closure = map_closure ~is_rec:(Some name) self closure in
         let app = map_ast self app in
         Ldef { name; closure; span; app; fn_type }
-    | Tif_end { cond; then_; type'; span } ->
-        let cond = map_ast self cond in
-        let then_ = map_ast self then_ in
-        let type' = map_type self type' in
-        let else_ = Lunit { span } in
-        Lif { cond; then_; else_; span; type' }
     | Tif { cond; then_; else_; span; type' } ->
         let cond = map_ast self cond in
         let then_ = map_ast self then_ in
@@ -276,18 +270,22 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           Ty_vector { read; write }
       | PolarType { type' = Svector_type { read = None; write = None; _ }; _ }
         ->
-          failwith "vector type not supported yet"
+          Ty_vector { read = Ty_void; write = Ty_void }
       | PolarType
           { type' = Svector_type { read = Some read; write = None; _ }; polar }
         ->
-          Ty_readonly_vector
-            { element = f (Polar.Type.create read polar) in_process }
+          Ty_vector
+            {
+              read = f (Polar.Type.create read polar) in_process;
+              write = Ty_void;
+            }
       | PolarType
           { type' = Svector_type { read = None; write = Some write; _ }; polar }
         ->
-          Ty_writeonly_vector
+          Ty_vector
             {
-              element = f (Polar.Type.create write (Polar.not polar)) in_process;
+              write = f (Polar.Type.create write (Polar.not polar)) in_process;
+              read = Ty_void;
             }
       | PolarType
           {
@@ -303,14 +301,18 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           failwith "vector type not supported yet"
       | PolarType
           { type' = Sreference { read = Some read; write = None; _ }; polar } ->
-          Ty_readonly_reference
-            { element = f (Polar.Type.create read polar) in_process }
+          Ty_reference
+            {
+              read = f (Polar.Type.create read polar) in_process;
+              write = Ty_void;
+            }
       | PolarType
           { type' = Sreference { read = None; write = Some write; _ }; polar }
         ->
-          Ty_writeonly_reference
+          Ty_reference
             {
-              element = f (Polar.Type.create write (Polar.not polar)) in_process;
+              write = f (Polar.Type.create write (Polar.not polar)) in_process;
+              read = Ty_void;
             }
       | PolarType { type' = Srecord { fields }; polar } ->
           let fields =
@@ -382,7 +384,7 @@ module Tests = struct
        let (module To_lambda) = (module Make (Fresh_sym) : MAPPER) in
        let%bind t = To_lambda.map t in
        let open Lambda in
-       t |> Lambda.type_of |> Type.sexp_of_t |> Sexp.to_string |> Ok)
+       t |> Lambda.type_of |> Type.to_string |> Ok)
       |> Or_error.ok_exn |> print_endline
     with
     | () -> ()
@@ -390,19 +392,19 @@ module Tests = struct
 
   let%expect_test "type empty file" =
     run_it {| |};
-    [%expect {| Ty_int |}]
+    [%expect {| () |}]
 
   let%expect_test "type int" =
     run_it {| 1 |};
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "type neg int" =
     run_it {| - 1 |};
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "parse float" =
     run_it "3.14";
-    [%expect {| Ty_float |}]
+    [%expect {| float |}]
 
   let%expect_test "vars must be defined" =
     run_it {| x |};
@@ -410,76 +412,71 @@ module Tests = struct
 
   let%expect_test "type rec" =
     run_it {| { a=0, b=1} |};
-    [%expect {| (Ty_record(fields(((Symbol a)Ty_int)((Symbol b)Ty_int)))) |}]
+    [%expect {| {a: int, b: int} |}]
 
   let%expect_test "field access" =
     run_it {| { a=0, b=1}.a |};
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
+    [%expect {| '__0 | int |}]
 
   let%expect_test "type lambda" =
     run_it {| fn x -> 10 |};
-    [%expect
-      {| (Ty_function(argument(Ty_variable(name(Symbol __0))))(result Ty_int)) |}]
+    [%expect {| '__0 -> int |}]
 
   let%expect_test "type let" =
     run_it {| let x = 0 in x|};
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "type let function" =
     run_it {| let f x -> 0 in f |};
-    [%expect
-      {| (Ty_function(argument(Ty_variable(name(Symbol __1))))(result Ty_int)) |}]
+    [%expect {| '__1 -> int |}]
 
   let%expect_test "type app" =
     run_it {| let f x -> 0 in f 2 |};
-    [%expect
-      {|
-      (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int))|}]
+    [%expect {|
+      '__1 | int|}]
 
   let%expect_test "type def function" =
     run_it {|
       def f x = f 0 in 
       f
     |};
-    [%expect {| (Ty_variable(name(Symbol __3))) |}]
+    [%expect {| '__3 |}]
 
   let%expect_test "type binop" =
     run_it "1 + 2";
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "type binop precedence" =
     run_it "1 + 2 * 3";
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "type relop" =
     run_it "1 < 2";
-    [%expect {| Ty_bool |}]
+    [%expect {| bool |}]
 
   let%expect_test "type binop paren" =
     run_it "(1 + 2) * 3";
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "if end" =
-    run_it "if 1 < 2 then () end";
-    [%expect {| Ty_unit |}]
+    run_it "if 1 < 2 then 4 end";
+    [%expect {| '__0 | () | int |}]
 
   let%expect_test "if" =
     run_it "if true then 1 else 0";
-    [%expect
-      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)) |}]
+    [%expect {| '__0 | int | int |}]
 
   let%expect_test "if union" =
     run_it "if true then 1 else 0.0";
-    [%expect
-      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_float)))(rhs Ty_int)) |}]
+    [%expect {| '__0 | float | int |}]
 
   let%expect_test "paren" =
     run_it "(1)";
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "tuple" =
     run_it "(1, 2)";
-    [%expect {| (Ty_tuple(first Ty_int)(second Ty_int)(rest())) |}]
+    [%expect {| (int, int) |}]
 
   let%expect_test "tuple single" =
     run_it "(1,)";
@@ -487,40 +484,37 @@ module Tests = struct
 
   let%expect_test "tuple index" =
     run_it "(1, 2).0";
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
+    [%expect {| '__0 | int |}]
 
   let%expect_test "triple index" =
     run_it "(1, 2, true).2";
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)) |}]
+    [%expect {| '__0 | bool |}]
 
   let%expect_test "empty vector" =
     run_it "[||]";
-    [%expect {| (Ty_readonly_vector(element(Ty_variable(name(Symbol __0))))) |}]
+    [%expect {| vector['__0, void] |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
-    [%expect
-      {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(rhs Ty_int)))) |}]
+    [%expect {| vector['__0 | int | int, void] |}]
 
   let%expect_test "union vector" =
     run_it "[| 1, true |]";
-    [%expect
-      {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_bool)))(rhs Ty_int)))) |}]
+    [%expect {| vector['__0 | bool | int, void] |}]
 
   let%expect_test "vector subscript" =
     run_it {| let xs = [| 1, 2 |] in xs[0] |};
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)) |}]
+    [%expect {| '__1 | int |}]
 
   let%expect_test "union vector subscript" =
     run_it {| let xs = [| 1, true |] in xs[0] |};
-    [%expect
-      {| (Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_bool)) |}]
+    [%expect {| '__1 | int | bool |}]
 
   let%expect_test "local readwrite vector" =
     run_it {|
        let xs = mut [| 0, 1|] in
        xs[0] = 1 |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "readwrite vector, capture readonly" =
     run_it
@@ -529,7 +523,7 @@ module Tests = struct
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-    [%expect {| ("Fx__Typing.Captured_mutable(_, _)") |}]
+    [%expect {| ("Fx__Typing.Type_error(_, _, _)") |}]
 
   let%expect_test "readwrite vector, capture readwrite" =
     run_it
@@ -538,50 +532,47 @@ module Tests = struct
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __3))))(rhs Ty_unit)) |}]
+    [%expect {| '__3 | () |}]
 
   let%expect_test "reference vectors can be readonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
-      &xs[..] |};
-    [%expect
-      {| (Ty_readonly_vector(element(Ty_union(lhs(Ty_union(lhs(Ty_variable(name(Symbol __1))))(rhs Ty_int)))(rhs Ty_int)))) |}]
+      xs[..] |};
+    [%expect {| vector['__1 | int | int, void] |}]
 
   let%expect_test "reference vectors can be writeonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
       &mut xs[..] |};
-    [%expect
-      {| (Ty_writeonly_vector(element(Ty_variable(name(Symbol __0))))) |}]
+    [%expect {| vector['__1 | int | int, '__0] |}]
 
   let%expect_test "readonly vectors can be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
-      let ys = &xs[..] in
+      let ys = xs[..] in
       ys[1] |};
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+    [%expect {| '__2 | int |}]
 
-  let%expect_test "writeonly vectors be written" =
+  let%expect_test "readwrite slices can be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
       let ys = &mut xs[..] in
       ys[1] = 10 |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "let ref" =
     run_it "let ref a = 0 in a";
-    [%expect
-      {| (Ty_reference(read(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(write(Ty_variable(name(Symbol __1))))) |}]
+    [%expect {| ref['__0 | int, void] |}]
 
   let%expect_test "let ref update" =
     run_it "let ref a = 0 in a := 1";
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "let ref deref" =
     run_it "let ref a = 0 in !a";
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+    [%expect {| '__2 | int |}]
 
   let%expect_test "let ref update union" =
     run_it {|
@@ -589,8 +580,7 @@ module Tests = struct
       a := 1.0;
       a
     |};
-    [%expect
-      {| (Ty_reference(read(Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)))(write(Ty_variable(name(Symbol __1))))) |}]
+    [%expect {| ref['__0 | int, void] |}]
 
   let%expect_test "let ref deref union" =
     run_it {|
@@ -598,26 +588,26 @@ module Tests = struct
       a := 1.0;
       !a
     |};
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __2))))(rhs Ty_int)) |}]
+    [%expect {| '__2 | int |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
+    [%expect {| '__0 | int |}]
 
   let%expect_test "seq" =
     run_it "1; 2";
-    [%expect {| Ty_int |}]
+    [%expect {| int  |}]
 
   let%expect_test "let mut update" =
     run_it "let mut a = 0 in a = 1";
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "declare mut closure" =
     run_it {|
       let mut f = fn x -> x in
       f 0
     |};
-    [%expect {| (Ty_variable(name(Symbol __7))) |}]
+    [%expect {| '__7 |}]
 
   let%expect_test "mut closure" =
     run_it
@@ -627,7 +617,7 @@ module Tests = struct
       f = fn x -> x + 1;
       f 0
     |};
-    [%expect {| (Ty_variable(name(Symbol __7))) |}]
+    [%expect {| '__7 |}]
 
   let%expect_test "disjoint mut" =
     run_it
@@ -637,7 +627,7 @@ module Tests = struct
       f = 7;
       f 0
     |};
-    [%expect {| (Ty_variable(name(Symbol __7))) |}]
+    [%expect {| '__7 |}]
 
   let%expect_test "value restriction" =
     run_it
@@ -646,22 +636,22 @@ module Tests = struct
       c = (fn x -> x + 1);
       c true
       |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
-  let%expect_test "counter loop" =
+  let%expect_test "ref counter loop" =
     run_it
       {| 
-      let mut i = 0 in
+      let ref i = 0 in
       for do
-        i = i + 1
+        i := (!i + 1)
       end;
-      i
+      !i
     |};
-    [%expect {| (Ty_union(lhs(Ty_variable(name(Symbol __0))))(rhs Ty_int)) |}]
+    [%expect {| '__3 | int |}]
 
   let%expect_test "for range" =
     run_it
@@ -671,7 +661,7 @@ module Tests = struct
           f i
         end
         |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "for nested loop" =
     run_it
@@ -684,7 +674,7 @@ module Tests = struct
           ()
         end
         |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 
   let%expect_test "for decreasing loop" =
     run_it
@@ -695,5 +685,5 @@ module Tests = struct
           ()
         end
         |};
-    [%expect {| Ty_unit |}]
+    [%expect {| () |}]
 end

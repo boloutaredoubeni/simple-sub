@@ -13,7 +13,7 @@
 %token LEFT_ARROW RIGHT_ARROW
 %token IN
 %token DEF FN
-%token AMPERSAND
+%token AS_MUT
 %token DOT DOT_DOT
 %token TO DOWNTO
 %token LBRACE RBRACE
@@ -30,12 +30,13 @@
 %token EQUAL_EQUAL LESS GREATER LESS_EQUAL GREATER_EQUAL NOT_EQUAL
 %token EOF
 
+
 %type <Syntax.t option> program
 %start program
 %% 
 
 program
-    : expr? EOF { $1 }
+    : expr = expr? EOF { expr }
 
 simple_expr
     : value = INT { Uint { value; span=Span.create $sloc } }
@@ -45,28 +46,16 @@ simple_expr
     | value = IDENT { Uvar { value; span=Span.create $sloc } }
     | value = IDENT LBRACKET index = expr RBRACKET { Usubscript { value; index; span=Span.create $sloc } }  
     | name = IDENT EQUAL value = expr { Uassign { name; value; span=Span.create $sloc } }
-    | value = IDENT LBRACKET index = expr RBRACKET EQUAL new_value = simple_expr { Uassign_subscript { value; index; new_value; span=Span.create $sloc } }
+    | name = IDENT LBRACKET index = expr RBRACKET EQUAL value = simple_expr { Uassign_subscript { name; index; value; span=Span.create $sloc } }
     | value = simple_expr DOT index = INT { Utuple_subscript { value; index; span=Span.create $sloc } }
     | value = simple_expr DOT field = IDENT { Uselect { value; field; span=Span.create $sloc } }
     | LBRACE fields = record_fields RBRACE { Urecord { fields; span=Span.create $sloc } }
     | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
     | mutability = mutability LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { mutability; values; span=Span.create $sloc } }
-    | readability = readability value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability; value; span=Span.create $sloc } }
+    | AS_MUT value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability=Readability.ReadWrite; value; span=Span.create $sloc } }
+    | AS_MUT value = IDENT { Umutable_ref { value; span=Span.create $sloc }}
+    | value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability=Readability.Readonly; value; span=Span.create $sloc } }
     | name = IDENT COLON_EQUAL value = simple_expr { Uupdate_ref { name; value; span=Span.create $sloc } }
-
-mutability
-    : MUT { Mutability.Mutable }
-    | REF { Mutability.Reference }
-    | { Mutability.Immutable }
-
-readability
-    : AMPERSAND { Readability.Readonly }
-    | AMPERSAND MUT { Readability.Writeonly }
-  
-
-expr
-    : value = simple_expr { value }
-    | fn = simple_expr value = expr  { Uapp{ fn; value; span=Span.create $sloc } }
     | BANG name = IDENT { Uderef { name; span=Span.create $sloc } }
     | MINUS value = expr {
         match value with
@@ -87,6 +76,16 @@ expr
     | left = expr LESS_EQUAL right = expr { Uop { op=Op.Leq; left; right; span=Span.create $sloc } }
     | left = expr GREATER_EQUAL right = expr { Uop { op=Op.Geq; left; right; span=Span.create $sloc } }
     | left = expr NOT_EQUAL right = expr { Uop { op=Op.Neq; left; right; span=Span.create $sloc } }
+
+mutability
+    : MUT { Mutability.Mutable }
+    | REF { Mutability.Reference }
+    | { Mutability.Immutable }
+
+expr
+    : value = simple_expr { value }
+    | fn = simple_expr value = expr  { Uapp{ fn; value; span=Span.create $sloc } }
+
     | FOR iterates = iterates DO body = expr END { 
         let rec to_iterates = function
             | [] -> Udone
@@ -108,6 +107,7 @@ expr
     | LET binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Immutable; value; app; span=Span.create $sloc } }
     | LET MUT binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Mutable; value; app; span=Span.create $sloc } }
     | LET REF binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.Reference; value; app; span=Span.create $sloc } }
+    | LET REF MUT binding = IDENT EQUAL value = expr IN app = expr { Ulet { binding; mutability=Mutability.MutableReference; value; app; span=Span.create $sloc } }
     | LET name = IDENT parameter = IDENT RIGHT_ARROW value = expr IN app = expr { 
         Ulet_fun { 
             name; 

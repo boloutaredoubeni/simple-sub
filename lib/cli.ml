@@ -33,18 +33,16 @@ module Make (S : S) : T = struct
           flag "-dump-lambda" no_arg ~doc:"FILE dump lambda to file"
         and filename =
           (* FIXME: '-' is not a real file, should drop into 'repl' mode *)
-          anon (maybe_with_default "-" ("filename" %: Filename_unix.arg_type))
+          anon
+            (maybe_with_default "stdin" ("filename" %: Filename_unix.arg_type))
         in
         let (module Cli_runner) =
-          let (module Fresh_sym) = Text.create_fresh_sym () in
           make_runner
             (module struct
               let print_ast = print_ast
               let print_tast = print_tast
               let filename = filename
               let print_lambda = print_lambda
-
-              module Fresh_sym = Fresh_sym
             end)
         in
         Cli_runner.run]
@@ -136,7 +134,7 @@ module Tests : sig end = struct
 
   let%expect_test "ast dump no file" =
     run_it "printer" [ "-dump-ast" ];
-    [%expect {| ("Fx__Runner.File_not_found(\"-\")") |}]
+    [%expect {| ("Fx__Runner.File_not_found(\"stdin\")") |}]
 
   let%expect_test "build_info" =
     run_it "test-cli" [ "-build-info" ];
@@ -152,7 +150,7 @@ module Tests : sig end = struct
     end) in
     Temp.with_file "" (fun file -> run_it "printer" [ "-dump-ast"; file ]);
     [%expect
-      {| (Uint(value 0)(span(Span(filename"")(start(Position(line 0)(column 0)))(finish(Position(line 0)(column 0)))))) |}]
+      {| (Utuple(values())(span(Span(filename"")(start(Position(line 0)(column 0)))(finish(Position(line 0)(column 0)))))) |}]
 
   let%expect_test "ast dump nonsense" =
     let module Temp = MakeFxTemp (struct
@@ -160,7 +158,7 @@ module Tests : sig end = struct
     end) in
     Temp.with_file "asdasd|" (fun file ->
         run_it "printer" [ "-dump-ast"; file ]);
-    [%expect {| ("Fx__Lexer.SyntaxError(\"\", \"|\", _)") |}]
+    [%expect {| ("Fx__Text.Syntax_error(\"stdin\", \"|\", _)") |}]
 
   let%expect_test "ast dump valid" =
     let module Temp = MakeFxTemp (struct
@@ -168,7 +166,7 @@ module Tests : sig end = struct
     end) in
     Temp.with_file "42" (fun file -> run_it "printer" [ "-dump-ast"; file ]);
     [%expect
-      {| (Uint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
+      {| (Uint(value 42)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 
   let%expect_test "type ast" =
     let module Temp = MakeFxTemp (struct
@@ -177,7 +175,7 @@ module Tests : sig end = struct
     Temp.with_file "42" (fun file ->
         run_it "printer tast" [ "-dump-tast"; file ]);
     [%expect
-      {| (Tint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
+      {| (Tint(value 42)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 
   let%expect_test "print lambda" =
     let module Temp = MakeFxTemp (struct
@@ -186,5 +184,5 @@ module Tests : sig end = struct
     Temp.with_file "42" (fun file ->
         run_it "printer tast" [ "-dump-lambda"; file ]);
     [%expect
-      {| (Lint(value 42)(span(Span(filename"")(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
+      {| (Lint(value 42)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 2)))))) |}]
 end

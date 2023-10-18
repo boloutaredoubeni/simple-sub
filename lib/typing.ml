@@ -6,7 +6,6 @@ exception Unbound_variable of { value : Symbol.t; span : Span.t }
 exception Missing_record_field of { value : Symbol.t }
 exception Missing_tuple_index of { value : int }
 exception Constrain_error of { lhs : Simple_type.t; rhs : Simple_type.t }
-exception Captured_mutable of { value : Symbol.t; span : Span.t }
 
 exception
   Type_error of {
@@ -434,7 +433,14 @@ module Constrain = struct
             let level = Variable.level rhs_state in
             let lhs = extrude lhs (Polar.of_bool true) level in
             constrain (Constraint { lhs; rhs })
-        | lhs, rhs -> raise (Constrain_error { lhs; rhs }))
+        | lhs, rhs ->
+            (* let string =
+                 Printf.sprintf "lhs: %s rhs: %s"
+                   (Simple_type.to_string lhs)
+                   (Simple_type.to_string rhs)
+               in
+               print_endline string; *)
+            raise (Constrain_error { lhs; rhs }))
       else ()
   end
 end
@@ -580,7 +586,11 @@ functor
           let type' = Self.find_exn self value in
           let type' = TypeScheme.instantiate type' (Self.level self) in
           let type' =
-            match type' with Smutable { read; _ } -> read | _ -> type'
+            match type' with
+            | Sreference { read = Some read; scope; _ } ->
+                Sreference { read = Some read; write = None; scope }
+            | Smutable { read; _ } -> read
+            | _ -> type'
           in
           Tvar { value; span; type' }
       | Uvar { value; span } -> raise (Unbound_variable { value; span })
@@ -627,6 +637,9 @@ functor
               { read = Some read; write = Some write; scope = Scope.Global }
           in
           Tvector { values; span; type' }
+      | Uvector { mutability = Mutability.MutableReference; _ } ->
+          (* This will never be parsed *)
+          assert false
       | Uslice { value; readability = Readability.Readonly; span }
         when Self.contains self value ->
           let type' =
@@ -649,18 +662,31 @@ functor
                        message =
                          "mutable vectors cannot explicitly be made readonly";
                      })
-            | _ -> failwith "expected vector in readonly context"
+            | ty ->
+                let level = Self.level self in
+                let read = S.Fresh_var.f level in
+                let write = S.Fresh_var.f level in
+                let expected =
+                  Sreference
+                    {
+                      read = Some read;
+                      write = Some write;
+                      scope = Scope.Global;
+                    }
+                in
+                raise (Type_error { expected; actual = ty; span })
           in
           Tvar { value; span; type' }
-      | Uslice { value; readability = Readability.Writeonly; span }
+      | Uslice { value; readability = Readability.ReadWrite; span }
         when Self.contains self value ->
           let type' =
             let scheme = Self.find_exn self value in
             match TypeScheme.instantiate scheme (Self.level self) with
             | Svector_type
-                { read = Some _; write = Some write; scope = Scope.Global } ->
+                { read = Some read; write = Some write; scope = Scope.Global }
+              ->
                 Svector_type
-                  { read = None; write = Some write; scope = Scope.Global }
+                  { read = Some read; write = Some write; scope = Scope.Global }
             | Svector_type { read = Some _; write = None; _ } ->
                 raise
                   (Slice_of_vector_error
@@ -674,14 +700,22 @@ functor
                        message = "mutable vectors are already readwrite locally";
                      })
             | ty ->
-                failwith
-                  ("expected vector in readwrite context "
-                  ^ Sexp.to_string (Simple_type.sexp_of_t ty)
-                  ^ " span " ^ Span.to_string span)
+                let level = Self.level self in
+                let read = S.Fresh_var.f level in
+                let write = S.Fresh_var.f level in
+                let expected =
+                  Svector_type
+                    {
+                      read = Some read;
+                      write = Some write;
+                      scope = Scope.Global;
+                    }
+                in
+                raise (Type_error { expected; actual = ty; span })
           in
           Tvar { value; span; type' }
-      | Uslice { readability = Readability.ReadWrite; _ } ->
-          failwith "slices cannot be readwrite"
+      | Uslice { readability = Readability.Writeonly; _ } ->
+          failwith "slices cannot be writeonly without annotations"
       | Uslice { value; span; _ } -> raise (Unbound_variable { value; span })
       | Utuple_subscript { value; index; span } ->
           let value = map_ast self value in
@@ -708,8 +742,18 @@ functor
             | Smutable { scope; write; _ } when Scope.(scope = Self.scope self)
               ->
                 write
-            | Smutable _ -> raise (Captured_mutable { value = name; span })
-            | _ -> failwith "expected mutable"
+            | Smutable { write; read; _ } as actual ->
+                let expected =
+                  Smutable { scope = Self.scope self; write; read }
+                in
+                raise (Type_error { expected; actual; span })
+            | ty ->
+                let level = Self.level self in
+                let read = S.Fresh_var.f level in
+                let write = S.Fresh_var.f level in
+                let scope = Self.scope self in
+                let expected = Smutable { read; write; scope } in
+                raise (Type_error { expected; actual = ty; span })
           in
           let value = map_ast self value in
           constrain (Tast.T.type_of value) type';
@@ -727,35 +771,86 @@ functor
       | Uderef { name = value; span; _ } ->
           raise (Unbound_variable { value; span })
       | Uupdate_ref { name; value; span } when Self.contains self name ->
+          let value = map_ast self value in
+          let value_type = Tast.T.type_of value in
           let type' =
             let scheme = Self.find_exn self name in
             match TypeScheme.instantiate scheme (Self.level self) with
             | Sreference { scope; write = Some write; _ }
               when Scope.(scope = Self.scope self) ->
                 write
-            | Sreference _ -> raise (Captured_mutable { value = name; span })
-            | _ -> failwith "expected mutable"
+            | Sreference { write = Some write; scope = Scope.Global; _ } ->
+                write
+            | ty ->
+                let expected =
+                  Sreference
+                    {
+                      read = None;
+                      write = Some value_type;
+                      scope = Scope.Global;
+                    }
+                in
+                raise (Type_error { expected; actual = ty; span })
           in
-          let value = map_ast self value in
-          constrain (Tast.T.type_of value) type';
+
+          constrain value_type type';
           Tupdate_ref { name; value; span }
       | Uupdate_ref { name = value; span; _ } ->
           raise (Unbound_variable { value; span })
-      | Uassign_subscript { value; index; new_value; span }
-        when Self.contains self value ->
-          let new_value = map_ast self new_value in
-          let val_type = Tast.T.type_of new_value in
+      | Umutable_ref { value; span } when Self.contains self value ->
           let type' =
             let scheme = Self.find_exn self value in
+            match TypeScheme.instantiate scheme (Self.level self) with
+            | Sreference
+                { read = Some read; write = Some write; scope = Scope.Global }
+              ->
+                Sreference
+                  { read = Some read; write = Some write; scope = Scope.Global }
+            | Sreference { read = Some read; write = None; scope } as actual ->
+                let variable = S.Fresh_var.f (Self.level self) in
+                let expected =
+                  Sreference { read = Some read; write = Some variable; scope }
+                in
+                raise (Type_error { expected; actual; span })
+            | Sreference { read = Some read; write = Some write; _ } as actual
+              ->
+                let expected =
+                  Sreference
+                    {
+                      read = Some read;
+                      write = Some write;
+                      scope = Scope.Global;
+                    }
+                in
+                raise (Type_error { expected; actual; span })
+            | ty ->
+                let level = Self.level self in
+                let read = S.Fresh_var.f level in
+                let write = S.Fresh_var.f level in
+                let expected =
+                  Sreference
+                    {
+                      read = Some read;
+                      write = Some write;
+                      scope = Scope.Global;
+                    }
+                in
+                raise (Type_error { expected; actual = ty; span })
+          in
+          Tvar { value; span; type' }
+      | Umutable_ref { value; span } -> raise (Unbound_variable { value; span })
+      | Uassign_subscript { name; index; value; span }
+        when Self.contains self name ->
+          let value = map_ast self value in
+          let value_type = Tast.T.type_of value in
+          let type' =
+            let scheme = Self.find_exn self name in
             match TypeScheme.instantiate scheme (Self.level self) with
             | Svector_type { scope = Scope.Global; write = Some write; _ } ->
                 write
             | Svector_type { scope; write = Some write; _ }
               when Scope.(scope = Self.scope self) ->
                 write
-            | Svector_type { write = None; _ } as value ->
-                raise (Readability_error { value; rw = Write })
-            | Svector_type _ -> raise (Captured_mutable { value; span })
             | ty ->
                 raise
                   (Type_error
@@ -764,7 +859,7 @@ functor
                          Simple_type.Svector_type
                            {
                              read = None;
-                             write = None;
+                             write = Some value_type;
                              scope = Self.scope self;
                            };
                        actual = ty;
@@ -775,10 +870,10 @@ functor
           let index = map_ast self index in
 
           constrain (Tast.T.type_of index) Sint_type;
-          constrain val_type type';
-          Tassign_subscript { value; index; new_value; span }
-      | Uassign_subscript { value; span; _ } ->
-          raise (Unbound_variable { value; span })
+          constrain value_type type';
+          Tassign_subscript { name; index; value; span }
+      | Uassign_subscript { name; span; _ } ->
+          raise (Unbound_variable { value = name; span })
       | Urecord { fields; span } ->
           Trecord
             {
@@ -828,6 +923,29 @@ functor
           let type' =
             Simple_type.Sreference
               { read = Some read; write = Some write; scope = Self.scope self }
+          in
+          let scheme = TypeScheme.of_simple_type type' in
+          let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
+          let type' = TypeScheme.instantiate scheme level in
+          Tlet { binding = (binding, type'); value; app; span }
+      | Ulet
+          {
+            binding;
+            mutability = Mutability.MutableReference;
+            value;
+            app;
+            span;
+          } ->
+          let value = map_ast (Self.level_up self) value in
+          let level = Self.level self in
+          let type' = Tast.T.type_of value in
+          let read = S.Fresh_var.f level in
+          let write = S.Fresh_var.f level in
+          constrain type' read;
+          constrain type' write;
+          let type' =
+            Simple_type.Sreference
+              { read = Some read; write = Some write; scope = Scope.global }
           in
           let scheme = TypeScheme.of_simple_type type' in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
@@ -888,18 +1006,12 @@ functor
                { argument = Tast.T.type_of arg; result = res });
           Tapp { fn; value = arg; span; type' = res }
       | Uif_end { cond; then_; span } ->
-          let cond = map_ast self cond in
-          constrain (Tast.T.type_of cond) Sbool_type;
-          let then_ = map_ast self then_ in
-          constrain (Tast.T.type_of then_) Sunit_type;
-          Tif_end { cond; then_; span; type' = Sunit_type }
+          map_ast self
+            (Uif { cond; then_; else_ = Utuple { values = []; span }; span })
       | Uif { cond; then_; else_; span } ->
-          let cond = map_ast self cond in
+          let cond = map_ast (Self.level_up self) cond in
           constrain (Tast.T.type_of cond) Sbool_type;
-          let type' =
-            let self = Self.level_up self in
-            S.Fresh_var.f (Self.level self)
-          in
+          let type' = S.Fresh_var.f (Self.level self) in
           let then_ = map_ast self then_ in
           constrain (Tast.T.type_of then_) type';
           let else_ = map_ast self else_ in
@@ -981,27 +1093,33 @@ module Tests = struct
        in
        let (module Visitor) = (module Make (S) : MAPPER) in
        let%bind t = Visitor.map ast in
-       t |> Tast.T.type_of |> Simple_type.sexp_of_t |> Sexp.to_string |> Ok)
+       t |> Tast.T.type_of |> Simple_type.to_string |> Ok)
       |> Or_error.ok_exn |> print_endline
     with
     | () -> ()
+    | exception Type_error { expected; actual; span } ->
+        print_endline
+          (Printf.sprintf "Type error\n  expected: %s\n  actual: %s\n  span: %s"
+             (Simple_type.to_string expected)
+             (Simple_type.to_string actual)
+             (Span.to_string span))
     | exception exn -> print_endline (Exn.to_string exn)
 
   let%expect_test "type empty file" =
     run_it {| |};
-    [%expect {| Sint_type |}]
+    [%expect {| () |}]
 
   let%expect_test "type int" =
     run_it {| 1 |};
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "type neg int" =
     run_it {| -1 |};
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "parse float" =
     run_it "3.14";
-    [%expect {| Sfloat_type |}]
+    [%expect {| float |}]
 
   let%expect_test "vars must be defined" =
     run_it {| x |};
@@ -1009,64 +1127,58 @@ module Tests = struct
 
   let%expect_test "type rec" =
     run_it {| { a=0, b=1} |};
-    [%expect
-      {| (Srecord(fields(((Symbol a)Sint_type)((Symbol b)Sint_type)))) |}]
+    [%expect {| {a: int, b: int} |}]
 
   let%expect_test "field access" =
     run_it {| { a=0, b=1}.a |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__0 |}]
 
   let%expect_test "type lambda" =
     run_it {| fn x -> 10 |};
-    [%expect
-      {| (Sfunction_type(argument(Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds())))))(result Sint_type)) |}]
+    [%expect {| '__0 -> int |}]
 
   let%expect_test "type let" =
     run_it {| let x = 0 in x|};
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "type let function" =
     run_it {| let f x -> 0 in f |};
-    [%expect
-      {| (Sfunction_type(argument(Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds())(upper_bounds())))))(result Sint_type)) |}]
+    [%expect {| '__1 -> int |}]
 
   let%expect_test "type app" =
     run_it {| let f x -> 0 in f 2 |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__1 |}]
 
   let%expect_test "type def function" =
     run_it {|
       def f x = f 0 in 
       f
     |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __3))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+    [%expect {| '__3 |}]
 
   let%expect_test "type binop" =
     run_it "1 + 2";
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "type float binop" =
     run_it "1.0 +. 2.0";
-    [%expect {| Sfloat_type |}]
+    [%expect {| float |}]
 
   let%expect_test "type binop precedence" =
     run_it "1 + 2 * 3";
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "type relop" =
     run_it "1 < 2";
-    [%expect {| Sbool_type |}]
+    [%expect {| bool |}]
 
   let%expect_test "type float relop" =
     run_it "1.0 < 2.0";
-    [%expect {| Sbool_type |}]
+    [%expect {| bool |}]
 
   let%expect_test "type binop paren" =
     run_it "(1 + 2) * 3";
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "bad binop" =
     run_it "1 + 0.67";
@@ -1074,29 +1186,27 @@ module Tests = struct
 
   let%expect_test "bool eq" =
     run_it "true == false";
-    [%expect {| Sbool_type |}]
+    [%expect {| bool |}]
 
   let%expect_test "if end" =
-    run_it "if 1 < 2 then () end";
-    [%expect {| Sunit_type |}]
+    run_it "if 1 < 2 then 4 end";
+    [%expect {| () | int <: '__0 |}]
 
   let%expect_test "if" =
     run_it "if true then 1 else 0";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sint_type Sint_type))(upper_bounds())))) |}]
+    [%expect {| int | int <: '__0 |}]
 
   let%expect_test "if union" =
     run_it "if true then 1 else 0.0";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds(Sfloat_type Sint_type))(upper_bounds())))) |}]
+    [%expect {| float | int <: '__0 |}]
 
   let%expect_test "type paren" =
     run_it "(1)";
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "type tuple" =
     run_it "(1, 2)";
-    [%expect {| (Stuple_type(first Sint_type)(second Sint_type)(rest())) |}]
+    [%expect {| (int, int) |}]
 
   let%expect_test "tuple single" =
     run_it "(1,)";
@@ -1104,43 +1214,35 @@ module Tests = struct
 
   let%expect_test "tuple index" =
     run_it "(1, 2).0";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__0 |}]
 
   let%expect_test "triple index" =
     run_it "(1, 2, true).2";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type))(upper_bounds())))) |}]
+    [%expect {| bool <: '__0 |}]
 
   let%expect_test "empty vector" =
     run_it "[||]";
-    [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds())(upper_bounds()))))))(write())(scope(Scope(value 0)))) |}]
+    [%expect {| vector['__0, _] @ 0 |}]
 
   let%expect_test "vector" =
     run_it "[| 1, 2 |]";
-    [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))(write())(scope(Scope(value 0)))) |}]
+    [%expect {| vector[int | int <: '__0, _] @ 0 |}]
 
   let%expect_test "union vector" =
     run_it "[| 1, true |]";
-    [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds()))))))(write())(scope(Scope(value 0)))) |}]
+    [%expect {| vector[bool | int <: '__0, _] @ 0 |}]
 
   let%expect_test "vector subscript" =
     run_it "let xs = [| 1, 2 |] in xs[0]";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__1 |}]
 
   let%expect_test "union vector subscript" =
     run_it "let xs = [| true, 2 |] in xs[0]";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sbool_type Sint_type))(upper_bounds())))) |}]
+    [%expect {| bool | int <: '__1 |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__0 |}]
 
   let%expect_test "mut update" =
     run_it "x = 1";
@@ -1154,19 +1256,24 @@ module Tests = struct
     run_it {|
       let xs = [| 0, 1|] in
       xs[0] = 1 |};
-    [%expect {| ("Fx__Typing.Readability_error(_, 1)") |}]
+    [%expect
+      {|
+     Type error
+       expected: vector[_, int] @ 0
+       actual: vector[int | int <: '__0 @ 1, _] @ 0
+       span: stdin:3:6:3:15 |}]
 
   let%expect_test "local readwrite vector" =
     run_it {|
        let xs = mut [| 0, 1|] in
        xs[0] = 1 |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "readwrite vector, no passing" =
     run_it {|
        let xs = ref [| 0, 1|] in
        xs[0] = 1 |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "readwrite vector, capture readonly" =
     run_it
@@ -1175,7 +1282,12 @@ module Tests = struct
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-    [%expect {| ("Fx__Typing.Captured_mutable(_, _)") |}]
+    [%expect
+      {|
+     Type error
+       expected: vector[_, '__2 @ 1] @ 1
+       actual: vector[int | int <: '__1 @ 1, '__0 @ 1] @ 0
+       span: stdin:3:18:3:27 |}]
 
   let%expect_test "readwrite vector, capture readwrite" =
     run_it
@@ -1184,11 +1296,10 @@ module Tests = struct
        let f x -> xs[0] = x in
        xs[0] = 1;
        f 1|};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __3))(level(Level(value 0)))(lower_bounds(Sunit_type))(upper_bounds())))) |}]
+    [%expect {| () <: '__3 |}]
 
   let%expect_test "readonly vector" =
-    run_it "&xs[..]";
+    run_it "xs[..]";
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
   let%expect_test "readwrite vector" =
@@ -1198,7 +1309,7 @@ module Tests = struct
   let%expect_test "immutable vectors are already readonly" =
     run_it {|
       let xs = [| 0, 1|] in
-      &xs[..] |};
+      xs[..] |};
     [%expect
       {| ("Fx__Typing.Slice_of_vector_error(_, _, \"vector is already readonly\")") |}]
 
@@ -1212,7 +1323,7 @@ module Tests = struct
   let%expect_test "mutable vectors can only be captured as readonly" =
     run_it {|
       let xs = mut [| 0, 1|] in
-      &xs[..] |};
+      xs[..] |};
     [%expect
       {| ("Fx__Typing.Slice_of_vector_error(_, _, \"mutable vectors cannot explicitly be made readonly\")") |}]
 
@@ -1226,24 +1337,27 @@ module Tests = struct
   let%expect_test "reference vectors can be captured as readonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
-      &xs[..] |};
-    [%expect
-      {| (Svector_type(read((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 1)))(lower_bounds(Sint_type Sint_type))(upper_bounds()))))))(write())(scope(Scope(value 0)))) |}]
+      xs[..] |};
+    [%expect {| vector[int | int <: '__1 @ 1, _] @ 0 |}]
 
   let%expect_test "reference vectors can be captured as readonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
       &mut xs[..] |};
-    [%expect
-      {| (Svector_type(read())(write((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 1)))(lower_bounds())(upper_bounds()))))))(scope Global)) |}]
+    [%expect {| vector[int | int <: '__1 @ 1, '__0 @ 1] |}]
 
   let%expect_test "readonly vectors cannot be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
-      let ys = &xs[..] in
+      let ys = xs[..] in
       ys[1] = 9|};
-    [%expect {| ("Fx__Typing.Readability_error(_, 1)") |}]
+    [%expect
+      {|
+     Type error
+       expected: vector[_, int] @ 0
+       actual: vector[int | int <: '__1 @ 1, _] @ 0
+       span: stdin:4:6:4:15 |}]
 
   let%expect_test "readwrite vectors can be read" =
     run_it
@@ -1251,16 +1365,15 @@ module Tests = struct
       let xs = ref [| 0, 1|] in
       let ys = &mut xs[..] in
       ys[1] |};
-    [%expect {| ("Fx__Typing.Readability_error(_, 0)") |}]
+    [%expect {| int <: '__2 |}]
 
   let%expect_test "readonly vectors can be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
-      let ys = &xs[..] in
+      let ys = xs[..] in
       ys[1] |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__2 |}]
 
   let%expect_test "readwrite vectors be written" =
     run_it
@@ -1268,35 +1381,43 @@ module Tests = struct
       let xs = ref [| 0, 1|] in
       let ys = &mut xs[..] in
       ys[1] = 10 |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "captured readonly vectors cannot be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
-      let ys = &xs[..] in
+      let ys = xs[..] in
       let f x -> ys[1] = x in
       f () |};
-    [%expect {| ("Fx__Typing.Readability_error(_, 1)") |}]
+    [%expect
+      {|
+       Type error
+         expected: vector[_, '__2 @ 1] @ 1
+         actual: vector[int | int <: '__1 @ 1, _] @ 0
+         span: stdin:4:17:4:26 |}]
 
-  let%expect_test "captured writeonly vectors cannot be read" =
+  let%expect_test "captured readwrite vectors can only be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
       let ys = &mut xs[..] in
       let f x -> ys[1] in
       f () |};
-    [%expect {| ("Fx__Typing.Readability_error(_, 0)") |}]
-
-  (* TODO: can we pass readonly and writeonly refs w/o annotations? *)
+    [%expect {| '__4 |}]
 
   let%expect_test "passed readonly vectors cannot be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
       let f ys -> ys[1] = 99 in
-      f &xs[..] |};
-    [%expect {| ("Fx__Typing.Type_error(_, _, _)") |}]
+      f xs[..] |};
+    [%expect
+      {|
+     Type error
+       expected: vector[_, int] @ 1
+       actual: '__2 @ 1
+       span: stdin:3:18:3:28 |}]
 
   let%expect_test "passed writeonly vectors cannot be written without \
                    annotations" =
@@ -1305,16 +1426,20 @@ module Tests = struct
       let xs = ref [| 0, 1|] in
       let f ys -> ys[1] = 99 in
       f &mut xs[..] |};
-    [%expect {| ("Fx__Typing.Type_error(_, _, _)") |}]
+    [%expect
+      {|
+     Type error
+       expected: vector[_, int] @ 1
+       actual: '__2 @ 1
+       span: stdin:3:18:3:28 |}]
 
   let%expect_test "passed readonly vectors be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
       let f ys -> ys[1] in
-      f &xs[..] |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __4))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+      f xs[..] |};
+    [%expect {| '__4 |}]
 
   let%expect_test "passed readonly vectors cannot be made writable" =
     run_it
@@ -1323,11 +1448,13 @@ module Tests = struct
       let f ys -> 
         let xs = &mut ys[..] in
         xs[0] = 2 in
-      f &xs[..] |};
+      f xs[..] |};
     [%expect
       {|
-       (Failure
-         "expected vector in readwrite context (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 1)))(lower_bounds())(upper_bounds())))) span file , start line 1, column 69, finish line 1, column 80") |}]
+     Type error
+       expected: vector['__3 @ 2, '__4 @ 2]
+       actual: '__2 @ 1
+       span: stdin:4:17:4:28 |}]
 
   let%expect_test "ref update" =
     run_it "a := 1";
@@ -1339,17 +1466,15 @@ module Tests = struct
 
   let%expect_test "let ref" =
     run_it "let ref a = 0 in a";
-    [%expect
-      {| (Sreference(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds()))))))(scope(Scope(value 0)))) |}]
+    [%expect {| ref[int <: '__0, _] @ 0 |}]
 
   let%expect_test "let ref update" =
     run_it "let ref a = 0 in a := 1";
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "let ref deref" =
     run_it "let ref a = 0 in !a";
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__2 |}]
 
   let%expect_test "let ref update union" =
     run_it {|
@@ -1357,8 +1482,7 @@ module Tests = struct
       a := 1.0;
       a
     |};
-    [%expect
-      {| (Sreference(read((Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds()))))))(write((Svar_type(state(VariableState(name(Symbol __1))(level(Level(value 0)))(lower_bounds(Sfloat_type Sint_type))(upper_bounds()))))))(scope(Scope(value 0)))) |}]
+    [%expect {| ref[int <: '__0, _] @ 0 |}]
 
   let%expect_test "let ref deref union" =
     run_it {|
@@ -1366,31 +1490,34 @@ module Tests = struct
       a := 1.0;
       !a
     |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __2))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds())))) |}]
+    [%expect {| int <: '__2 |}]
 
   let%expect_test "seq" =
     run_it "1; 2";
-    [%expect {| Sint_type |}]
+    [%expect {| int |}]
 
   let%expect_test "let mut update" =
     run_it "let mut a = 0 in a = 1";
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "mut capture by value" =
     run_it {| 
       let mut a = 0 in
       let f x -> a = x in
       f 1 |};
-    [%expect {| ("Fx__Typing.Captured_mutable(_, _)") |}]
+    [%expect
+      {|
+     Type error
+       expected: mut[int <: '__0, int <: '__1] @ 1
+       actual: mut[int <: '__0, int <: '__1] @ 0
+       span: stdin:3:17:3:22 |}]
 
   let%expect_test "declare mut closure" =
     run_it {|
       let mut f = fn x -> x in
       f 0
     |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __7))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+    [%expect {| '__7 |}]
 
   let%expect_test "mut closure" =
     run_it
@@ -1400,8 +1527,7 @@ module Tests = struct
       f = fn x -> x + 1;
       f 0
     |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __7))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+    [%expect {| '__7 |}]
 
   let%expect_test "disjoint mut" =
     run_it
@@ -1411,8 +1537,7 @@ module Tests = struct
       f = 7;
       f 0
     |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __7))(level(Level(value 0)))(lower_bounds())(upper_bounds())))) |}]
+    [%expect {| '__7 |}]
 
   let%expect_test "value restriction" =
     run_it
@@ -1421,11 +1546,11 @@ module Tests = struct
       c = (fn x -> x + 1);
       c true
       |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "counter loop" =
     run_it
@@ -1436,8 +1561,18 @@ module Tests = struct
       end;
       i
     |};
-    [%expect
-      {| (Svar_type(state(VariableState(name(Symbol __0))(level(Level(value 0)))(lower_bounds(Sint_type))(upper_bounds(Sint_type))))) |}]
+    [%expect {| int <: '__0 <: int |}]
+
+  let%expect_test "ref counter loop" =
+    run_it
+      {| 
+      let ref i = 0 in
+      for do
+        i := (!i + 1)
+      end;
+      !i
+    |};
+    [%expect {| int <: '__3 |}]
 
   let%expect_test "for range" =
     run_it
@@ -1447,7 +1582,7 @@ module Tests = struct
           f i
         end
         |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "for nested loop" =
     run_it
@@ -1460,7 +1595,7 @@ module Tests = struct
           ()
         end
         |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
 
   let%expect_test "for decreasing loop" =
     run_it
@@ -1471,5 +1606,130 @@ module Tests = struct
           ()
         end
         |};
-    [%expect {| Sunit_type |}]
+    [%expect {| () |}]
+
+  let%expect_test "reference can be captured as readonly" =
+    run_it {|
+      let ref xs = 0 in
+      xs |};
+    [%expect {| ref[int <: '__0, _] @ 0 |}]
+
+  let%expect_test "reference cannot be captured as readwrite" =
+    run_it {|
+      let ref xs = 0 in
+      &mut xs |};
+    [%expect
+      {|
+     Type error
+       expected: ref[int <: '__0, int <: '__1]
+       actual: ref[int <: '__0, int <: '__1] @ 0
+       span: stdin:3:6:3:13 |}]
+
+  let%expect_test "readonly reference cannot be written" =
+    run_it
+      {|
+      let xs = ref [| 0, 1|] in
+      let ys = xs[..] in
+      ys[1] = 9|};
+    [%expect
+      {|
+      Type error
+        expected: vector[_, int] @ 0
+        actual: vector[int | int <: '__1 @ 1, _] @ 0
+        span: stdin:4:6:4:15 |}]
+
+  let%expect_test "readwrite reference can be read" =
+    run_it {|
+      let ref mut xs = 0 in
+      let ys = &mut xs in
+      !ys |};
+    [%expect {| int <: '__2 |}]
+
+  let%expect_test "readonly reference can be read" =
+    run_it {|
+      let ref mut xs = 0 in
+      let ys = xs in
+      !ys |};
+    [%expect {| int <: '__2 |}]
+
+  let%expect_test "readwrite reference be written" =
+    run_it
+      {|
+      let ref mut xs = 0 in
+      let ys = &mut xs in
+      ys := 10 |};
+    [%expect {| () |}]
+
+  let%expect_test "captured readonly reference  cannot be written" =
+    run_it
+      {|
+      let ref mut xs = 0 in
+      let ys = xs in
+      let f x -> ys := x in
+      f () |};
+    [%expect
+      {|    
+      Type error
+        expected: ref[_, '__2 @ 1]
+        actual: ref[int <: '__0, _]
+        span: stdin:4:17:4:24 |}]
+
+  let%expect_test "captured readwrite reference can only be read" =
+    run_it
+      {|
+      let ref mut xs = 0 in
+      let ys = &mut xs in
+      let f x -> ys in
+      f () |};
+    [%expect {| ref[int <: '__0, _]  <: '__3 |}]
+
+  let%expect_test "passed readonly reference cannot be written" =
+    run_it
+      {|
+      let ref mut xs = 0 in
+      let f ys -> ys := 99 in
+      f xs |};
+    [%expect
+      {| 
+      Type error
+        expected: ref[_, int]
+        actual: '__2 @ 1
+        span: stdin:3:18:3:26|}]
+
+  let%expect_test "passed readwrite reference cannot be written without \
+                   annotations" =
+    run_it
+      {|
+      let ref mut xs = 0 in
+      let f ys -> ys := 99 in
+      f &mut xs |};
+    [%expect
+      {| 
+      Type error
+        expected: ref[_, int]
+        actual: '__2 @ 1
+        span: stdin:3:18:3:26 |}]
+
+  let%expect_test "passed readonly reference be read" =
+    run_it
+      {|x
+      let ref mut xs = 0 in
+      let f ys -> !ys in
+      f xs |};
+    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+  let%expect_test "passed readonly reference cannot be made writable" =
+    run_it
+      {|
+      let ref mut xs = 0 in
+      let f ys -> 
+        let xs = &mut ys in
+        xs := 2 in
+      f xs |};
+    [%expect
+      {|
+        Type error
+          expected: ref['__3 @ 2, '__4 @ 2]
+          actual: '__2 @ 1
+          span: stdin:4:17:4:24 |}]
 end

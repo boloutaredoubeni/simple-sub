@@ -4,19 +4,15 @@ open Text
 module Type = struct
   module T = struct
     type t =
-      | Ty_top
-      | Ty_bottom
+      | Ty_any
+      | Ty_void
       | Ty_union of { lhs : t; rhs : t }
       | Ty_intersection of { lhs : t; rhs : t }
       | Ty_function of { argument : t; result : t }
       | Ty_unit
       | Ty_tuple of { first : t; second : t; rest : t list }
       | Ty_vector of { read : t; write : t }
-      | Ty_readonly_vector of { element : t }
-      | Ty_writeonly_vector of { element : t }
       | Ty_reference of { read : t; write : t }
-      | Ty_readonly_reference of { element : t }
-      | Ty_writeonly_reference of { element : t }
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
@@ -27,31 +23,26 @@ module Type = struct
     [@@deriving compare, sexp, equal]
 
     let rec to_string = function
-      | Ty_top -> "any"
-      | Ty_bottom -> "void"
+      | Ty_any -> "any"
+      | Ty_void -> "void"
       | Ty_mutable { read; write } ->
-          "mut[+" ^ to_string read ^ ", -" ^ to_string write ^ "]"
+          "mut[" ^ to_string read ^ ", " ^ to_string write ^ "]"
       | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
-      | Ty_intersection { lhs; rhs } -> to_string lhs ^ " & " ^ to_string rhs
+      | Ty_intersection { lhs; rhs } -> to_string lhs ^ " + " ^ to_string rhs
       | Ty_function { argument; result } ->
           to_string argument ^ " -> " ^ to_string result
       | Ty_unit -> "()"
       | Ty_tuple { first; second; rest } ->
           let rest = List.map rest ~f:to_string in
           let rest = String.concat ~sep:", " rest in
-          "(" ^ to_string first ^ ", " ^ to_string second ^ ", " ^ rest ^ ")"
+          let rest = if String.is_empty rest then rest else ", " ^ rest in
+          "(" ^ to_string first ^ ", " ^ to_string second ^ rest ^ ")"
       | Ty_vector { read; write } ->
-          "vector[+" ^ to_string read ^ ", -" ^ to_string write ^ "]"
-      | Ty_readonly_vector { element } ->
-          "readonly vector[" ^ to_string element ^ "]"
-      | Ty_writeonly_vector { element } ->
-          "writeonly vector[" ^ to_string element ^ "]"
+          "vector[" ^ to_string read ^ ", " ^ to_string write ^ "]"
       | Ty_reference { read; write } ->
-          "reference[+" ^ to_string read ^ ", -" ^ to_string write ^ "]"
-      | Ty_readonly_reference { element } ->
-          "readonly reference[" ^ to_string element ^ "]"
-      | Ty_writeonly_reference { element } ->
-          "writeonly reference[" ^ to_string element ^ "]"
+          let read = to_string read in
+          let write = to_string write in
+          "ref[" ^ read ^ ", " ^ write ^ "]"
       | Ty_record { fields } ->
           let fields =
             List.map fields ~f:(fun (name, type') ->
@@ -123,9 +114,9 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Lassign_subscript of {
-        value : Symbol.t;
+        name : Symbol.t;
         index : t;
-        new_value : t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
     | Lderef of {
@@ -230,9 +221,9 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Lassign_subscript of {
-        value : Symbol.t;
+        name : Symbol.t;
         index : t;
-        new_value : t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
     | Lderef of {

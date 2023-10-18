@@ -12,6 +12,9 @@ module Level = struct
       Level { value = Int.max left right }
 
     let level_up (Level { value }) = Level { value = value + 1 }
+
+    let to_string (Level { value }) =
+      if value = 0 then "" else Printf.sprintf " @ %d" value
   end
 
   include T
@@ -28,6 +31,10 @@ module Scope = struct
     let incr = function
       | Scope { value } -> Scope { value = value + 1 }
       | Global -> Global
+
+    let to_string = function
+      | Scope { value } -> Printf.sprintf "@ %d" value
+      | Global -> ""
   end
 
   include T
@@ -46,28 +53,13 @@ module rec Simple_type : sig
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
-      (* TODO: mutable types need 'read' or 'read/write's
-
-         /// the  read/write reference version
-         // this is local readwrite, global readonly
-         let ref r = ... in
-         // this is global readwrite
-         let ref mut r = ... in
-         // this is pass readonly
-          f r
-         // this is pass writeonly, only refs can be passed as writeonly
-         f (&mut r)
-         // this is ref write
-         r := 1
-         // this is ref read
-         *r OR ^r or @r // *r is the most common and preferred
-      *)
     | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
   val level : t -> Level.t
   val deref : t -> t
+  val to_string : t -> string
 end = struct
   type t =
     | Svar_type of { state : Variable.t }
@@ -104,6 +96,41 @@ end = struct
     | Smutable { read; write; _ } -> Level.max (level read) (level write)
 
   let rec deref = function Smutable { read; _ } -> deref read | type' -> type'
+
+  let rec to_string = function
+    | Svar_type { state } -> Variable.to_string state
+    | Sint_type -> "int"
+    | Sfloat_type -> "float"
+    | Sbool_type -> "bool"
+    | Sunit_type -> "()"
+    | Sfunction_type { argument; result } ->
+        Printf.sprintf "%s -> %s" (to_string argument) (to_string result)
+    | Smutable { read; write; scope } ->
+        Printf.sprintf "mut[%s, %s] %s" (to_string read) (to_string write)
+          (Scope.to_string scope)
+    | Srecord { fields } ->
+        Printf.sprintf "{%s}"
+          (String.concat ~sep:", "
+             (List.map fields ~f:(fun (k, v) ->
+                  Printf.sprintf "%s: %s" (Symbol.to_string k) (to_string v))))
+    | Sreference { read; write; scope } ->
+        Printf.sprintf "ref[%s, %s] %s"
+          (Option.value_map read ~default:"_" ~f:to_string)
+          (Option.value_map write ~default:"_" ~f:to_string)
+          (Scope.to_string scope)
+    | Stuple_type { first; second; rest } ->
+        Printf.sprintf "(%s, %s%s)" (to_string first) (to_string second)
+          (String.concat ~sep:", " (List.map rest ~f:to_string))
+    | Ssparse_tuple { indices } ->
+        Printf.sprintf "(%s)"
+          (String.concat ~sep:", "
+             (List.map indices ~f:(fun (i, t) ->
+                  Printf.sprintf "%d: %s" i (to_string t))))
+    | Svector_type { read; write; scope } ->
+        Printf.sprintf "vector[%s, %s] %s"
+          (Option.value_map read ~default:"_" ~f:to_string)
+          (Option.value_map write ~default:"_" ~f:to_string)
+          (Scope.to_string scope)
 end
 
 and Variable : sig
@@ -127,6 +154,7 @@ and Variable : sig
   type comparator_witness
 
   val comparator : (t, comparator_witness) Comparator.t
+  val to_string : t -> string
 end = struct
   module T = struct
     open Simple_type
@@ -168,6 +196,21 @@ end = struct
 
     let upper_bounds = function
       | VariableState { upper_bounds; _ } -> upper_bounds
+
+    let to_string (VariableState { level; lower_bounds; upper_bounds; name }) =
+      let lower_bounds =
+        List.map !lower_bounds ~f:(fun bound -> Simple_type.to_string bound)
+      in
+      let lower_bounds = String.concat ~sep:" | " lower_bounds in
+      let upper_bounds =
+        List.map !upper_bounds ~f:(fun bound -> Simple_type.to_string bound)
+      in
+      let upper_bounds = String.concat ~sep:" | " upper_bounds in
+      Printf.sprintf "%s%s'%s%s%s%s" lower_bounds
+        (if String.is_empty lower_bounds then "" else " <: ")
+        (Symbol.to_string name)
+        (if String.is_empty upper_bounds then "" else " <: ")
+        upper_bounds (Level.to_string level)
   end
 
   include T
@@ -311,9 +354,9 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Tassign_subscript of {
-        value : Symbol.t;
+        name : Symbol.t;
         index : t;
-        new_value : t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
     | Tderef of {
@@ -350,12 +393,6 @@ module rec T : sig
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);
-      }
-    | Tif_end of {
-        cond : t;
-        then_ : t;
-        span : (Span.span[@compare.ignore]);
-        type' : Simple_type.t;
       }
     | Tif of {
         cond : t;
@@ -425,9 +462,9 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Tassign_subscript of {
-        value : Symbol.t;
+        name : Symbol.t;
         index : t;
-        new_value : t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
     | Tderef of {
@@ -464,12 +501,6 @@ end = struct
         closure : Closure.t;
         app : t;
         span : (Span.span[@compare.ignore]);
-      }
-    | Tif_end of {
-        cond : t;
-        then_ : t;
-        span : (Span.span[@compare.ignore]);
-        type' : Simple_type.t;
       }
     | Tif of {
         cond : t;
@@ -512,7 +543,6 @@ end = struct
     | Tdef { app; _ } -> type_of app
     | Tprimop { type'; _ }
     | Tif { type'; _ }
-    | Tif_end { type'; _ }
     | Tderef { type'; _ }
     | Tfor { type'; _ } ->
         type'
@@ -542,7 +572,6 @@ end = struct
       | Tlambda { closure = Tclosure { span; _ } }
       | Tdef { span; _ }
       | Tprimop { span; _ }
-      | Tif_end { span; _ }
       | Tfor { span; _ }
       | Tif { span; _ } ->
           span

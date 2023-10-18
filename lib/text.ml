@@ -12,9 +12,7 @@ module Position = struct
     Position { line; column }
 
   let default = Position { line = 0; column = 0 }
-
-  let to_string (Position { line; column }) =
-    Printf.sprintf "line %d, column %d" line column
+  let to_string (Position { line; column }) = Printf.sprintf "%d:%d" line column
 
   module Tests = struct
     let%test_unit "default positions" = [%test_eq: t] default (create (0, 0))
@@ -33,8 +31,7 @@ module Span = struct
   [@@deriving sexp, compare, equal]
 
   let to_string (Span { filename; start; finish }) =
-    Printf.sprintf "file %s, start %s, finish %s" filename
-      (Position.to_string start)
+    Printf.sprintf "%s:%s:%s" filename (Position.to_string start)
       (Position.to_string finish)
 
   module type SPANNED = sig
@@ -52,7 +49,10 @@ module Span = struct
   type t = span
 
   let create ((start, finish) : Lexing.position * Lexing.position) =
-    let filename = start.pos_fname in
+    let filename =
+      let filename = start.pos_fname in
+      if String.is_empty filename then "stdin" else filename
+    in
     let start = Position.of_lexing_position start in
     let finish = Position.of_lexing_position finish in
     Span { filename; start; finish }
@@ -100,3 +100,6 @@ let create_fresh_sym () =
       counter := !counter + 1;
       sym
   end : FRESH_SYM)
+
+exception
+  Syntax_error of { filename : string; token : string; position : Position.t }
