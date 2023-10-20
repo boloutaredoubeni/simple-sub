@@ -32,7 +32,6 @@ module Make (S : S) : T = struct
         and print_lambda =
           flag "-dump-lambda" no_arg ~doc:"FILE dump lambda to file"
         and filename =
-          (* FIXME: '-' is not a real file, should drop into 'repl' mode *)
           anon
             (maybe_with_default "stdin" ("filename" %: Filename_unix.arg_type))
         in

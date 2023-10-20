@@ -76,9 +76,9 @@ module Tests = struct
       {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 11)))(finish(Position(line 1)(column 12)))))))(span(Span(filename stdin)(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 11)))))))(app(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 17)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 18)))(finish(Position(line 1)(column 19)))))))(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 19)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 19)))))) |}]
 
   let%expect_test "closure" =
-    run_it "fn x -> x";
+    run_it "fn x -> x end";
     [%expect
-      {| (Ulambda(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))))) |}]
+      {| (Ulambda(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))))) |}]
 
   let%expect_test "def" =
     run_it "def f x = x in f 0";
@@ -298,4 +298,45 @@ module Tests = struct
         |};
     [%expect
       {| (Ufor(iterates(Uiterate(name(Symbol i))(start(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 15)))(finish(Position(line 3)(column 16)))))))(finish(Uint(value 10)(span(Span(filename stdin)(start(Position(line 3)(column 24)))(finish(Position(line 3)(column 26)))))))(is_ascending false)(span(Span(filename stdin)(start(Position(line 3)(column 10)))(finish(Position(line 3)(column 26)))))(rest Udone)))(body(Utuple(values())(span(Span(filename stdin)(start(Position(line 5)(column 10)))(finish(Position(line 5)(column 12)))))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 6)(column 11)))))) |}]
+
+  let%expect_test "empty char" =
+    run_it {| '' |};
+    [%expect {| ("Fx__Text.Syntax_error(\"stdin\", \"\", _)") |}]
+
+  let%expect_test "chars are not strings" =
+    run_it {| 'hello world' |};
+    [%expect {| ("Fx__Text.Syntax_error(\"stdin\", \"e\", _)") |}]
+
+  let%expect_test "a char" =
+    run_it {| 'a' |};
+    [%expect
+      {| (Uchar(value a)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))) |}]
+
+  let%expect_test "escape char" =
+    run_it {|'\n' |};
+    [%expect
+      {| (Uchar(value"\n")(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))) |}]
+
+  let%expect_test "emoji" =
+    run_it {|"😀" |};
+    [%expect
+      {| (Ustring(value"\240\159\152\128")(span(Span(filename stdin)(start(Position(line 1)(column 5)))(finish(Position(line 1)(column 6)))))) |}]
+
+  let%expect_test "unterminated char" =
+    run_it {|'  |};
+    [%expect {| ("Fx__Text.Syntax_error(\"stdin\", \" \", _)") |}]
+
+  let%expect_test "unterminated strings" =
+    run_it {| "hello world |};
+    [%expect {| ("Fx__Text.Syntax_error(\"stdin\", \"\", _)") |}]
+
+  let%expect_test "strings" =
+    run_it {| "hello world" |};
+    [%expect
+      {| (Ustring(value"hello world")(span(Span(filename stdin)(start(Position(line 1)(column 13)))(finish(Position(line 1)(column 14)))))) |}]
+
+  let%expect_test "string concat" =
+    run_it {| "hello" ^ "world" |};
+    [%expect
+      {| (Uop(op SAdd)(left(Ustring(value hello)(span(Span(filename stdin)(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8)))))))(right(Ustring(value world)(span(Span(filename stdin)(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 18)))))) |}]
 end

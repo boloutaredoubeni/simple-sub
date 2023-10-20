@@ -45,6 +45,7 @@ module rec Simple_type : sig
   type t =
     | Svar_type of { state : Variable.t }
     | Sint_type
+    | Schar_type
     | Sfloat_type
     | Sbool_type
     | Smutable of { read : t; write : t; scope : Scope.t }
@@ -53,17 +54,21 @@ module rec Simple_type : sig
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
+    | Sstring_type
     | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
 
   val level : t -> Level.t
   val deref : t -> t
-  val to_string : t -> string
+
+  val to_string :
+    visited:(Symbol.t, Symbol.comparator_witness) Set.t -> t -> string
 end = struct
   type t =
     | Svar_type of { state : Variable.t }
     | Sint_type
+    | Schar_type
     | Sfloat_type
     | Sbool_type
     | Smutable of { read : t; write : t; scope : Scope.t }
@@ -72,6 +77,7 @@ end = struct
     | Sunit_type
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
+    | Sstring_type
     | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
   [@@deriving compare, sexp]
@@ -79,14 +85,16 @@ end = struct
   let rec level = function
     | Sfunction_type { argument; result } ->
         Level.max (level argument) (level result)
-    | Svar_type { state = VariableState { level; _ } } -> level
-    | Sint_type | Sbool_type | Sfloat_type | Sunit_type -> Level.default
+    | Svar_type { state } -> state.level
+    | Sint_type | Sbool_type | Sfloat_type | Sunit_type | Schar_type ->
+        Level.default
     | Ssparse_tuple { indices } ->
         List.fold indices ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
     | Stuple_type { first; second; rest } ->
         List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
             Level.max acc (level t))
+    | Sstring_type -> Level.default
     | Svector_type { read; write; _ } | Sreference { read; write; _ } ->
         List.fold [ read; write ] ~init:Level.default ~f:(fun acc -> function
           | None -> acc | Some t -> Level.max acc (level t))
@@ -95,80 +103,84 @@ end = struct
             Level.max acc (level t))
     | Smutable { read; write; _ } -> Level.max (level read) (level write)
 
-  let rec deref = function Smutable { read; _ } -> deref read | type' -> type'
+  let deref = function Smutable { read = type'; _ } | type' -> type'
 
-  let rec to_string = function
-    | Svar_type { state } -> Variable.to_string state
+  let rec to_string ~visited = function
+    | Svar_type { state } -> Variable.to_string ~visited state
     | Sint_type -> "int"
     | Sfloat_type -> "float"
     | Sbool_type -> "bool"
+    | Schar_type -> "char"
     | Sunit_type -> "()"
+    | Sstring_type -> "string"
     | Sfunction_type { argument; result } ->
-        Printf.sprintf "%s -> %s" (to_string argument) (to_string result)
+        Printf.sprintf "%s -> %s"
+          (to_string ~visited argument)
+          (to_string ~visited result)
     | Smutable { read; write; scope } ->
-        Printf.sprintf "mut[%s, %s] %s" (to_string read) (to_string write)
-          (Scope.to_string scope)
+        Printf.sprintf "mut[%s, %s] %s" (to_string ~visited read)
+          (to_string ~visited write) (Scope.to_string scope)
     | Srecord { fields } ->
         Printf.sprintf "{%s}"
           (String.concat ~sep:", "
              (List.map fields ~f:(fun (k, v) ->
-                  Printf.sprintf "%s: %s" (Symbol.to_string k) (to_string v))))
+                  Printf.sprintf "%s: %s" (Symbol.to_string k)
+                    (to_string ~visited v))))
     | Sreference { read; write; scope } ->
         Printf.sprintf "ref[%s, %s] %s"
-          (Option.value_map read ~default:"_" ~f:to_string)
-          (Option.value_map write ~default:"_" ~f:to_string)
+          (Option.value_map read ~default:"_" ~f:(to_string ~visited))
+          (Option.value_map write ~default:"_" ~f:(to_string ~visited))
           (Scope.to_string scope)
     | Stuple_type { first; second; rest } ->
-        Printf.sprintf "(%s, %s%s)" (to_string first) (to_string second)
-          (String.concat ~sep:", " (List.map rest ~f:to_string))
+        Printf.sprintf "(%s, %s%s)" (to_string ~visited first)
+          (to_string ~visited second)
+          (String.concat ~sep:", " (List.map rest ~f:(to_string ~visited)))
     | Ssparse_tuple { indices } ->
         Printf.sprintf "(%s)"
           (String.concat ~sep:", "
              (List.map indices ~f:(fun (i, t) ->
-                  Printf.sprintf "%d: %s" i (to_string t))))
+                  Printf.sprintf "%d: %s" i (to_string ~visited t))))
     | Svector_type { read; write; scope } ->
         Printf.sprintf "vector[%s, %s] %s"
-          (Option.value_map read ~default:"_" ~f:to_string)
-          (Option.value_map write ~default:"_" ~f:to_string)
+          (Option.value_map read ~default:"_" ~f:(to_string ~visited))
+          (Option.value_map write ~default:"_" ~f:(to_string ~visited))
           (Scope.to_string scope)
 end
 
 and Variable : sig
-  type t =
-    | VariableState of {
-        name : Symbol.t;
-        level : Level.t;
-        lower_bounds : Simple_type.t list ref;
-        upper_bounds : Simple_type.t list ref;
-      }
+  type t = {
+    name : Symbol.t;
+    level : Level.t;
+    mutable lower_bounds : Simple_type.t list;
+    mutable upper_bounds : Simple_type.t list;
+  }
   [@@deriving compare, sexp]
 
   val create : level:Level.t -> fresher:(module FRESH_SYM) -> Simple_type.t
   val name : t -> Symbol.t
   val level : t -> Level.t
-  val lower_bounds : t -> Simple_type.t list ref
-  val upper_bounds : t -> Simple_type.t list ref
   val to_simple_type : t -> Simple_type.t
   val of_simple_type : Simple_type.t -> t option
 
   type comparator_witness
 
   val comparator : (t, comparator_witness) Comparator.t
-  val to_string : t -> string
+
+  val to_string :
+    visited:(Symbol.t, Symbol.comparator_witness) Set.t -> t -> string
 end = struct
   module T = struct
     open Simple_type
 
-    type t =
-      | VariableState of {
-          name : Symbol.t;
-          level : Level.t;
-          lower_bounds : Simple_type.t list ref;
-          upper_bounds : Simple_type.t list ref;
-        }
+    type t = {
+      name : Symbol.t;
+      level : Level.t;
+      mutable lower_bounds : Simple_type.t list;
+      mutable upper_bounds : Simple_type.t list;
+    }
     [@@deriving compare, sexp]
 
-    let name = function VariableState { name; _ } -> name
+    let name = function { name; _ } -> name
     let to_simple_type state = Svar_type { state }
 
     let of_simple_type = function
@@ -180,37 +192,37 @@ end = struct
       Svar_type
         {
           state =
-            VariableState
-              {
-                level;
-                lower_bounds = ref [];
-                upper_bounds = ref [];
-                name = Fresh_sym.f ();
-              };
+            {
+              level;
+              lower_bounds = [];
+              upper_bounds = [];
+              name = Fresh_sym.f ();
+            };
         }
 
-    let level = function VariableState { level; _ } -> level
+    let level = function { level; _ } -> level
 
-    let lower_bounds = function
-      | VariableState { lower_bounds; _ } -> lower_bounds
-
-    let upper_bounds = function
-      | VariableState { upper_bounds; _ } -> upper_bounds
-
-    let to_string (VariableState { level; lower_bounds; upper_bounds; name }) =
-      let lower_bounds =
-        List.map !lower_bounds ~f:(fun bound -> Simple_type.to_string bound)
-      in
-      let lower_bounds = String.concat ~sep:" | " lower_bounds in
-      let upper_bounds =
-        List.map !upper_bounds ~f:(fun bound -> Simple_type.to_string bound)
-      in
-      let upper_bounds = String.concat ~sep:" | " upper_bounds in
-      Printf.sprintf "%s%s'%s%s%s%s" lower_bounds
-        (if String.is_empty lower_bounds then "" else " <: ")
-        (Symbol.to_string name)
-        (if String.is_empty upper_bounds then "" else " <: ")
-        upper_bounds (Level.to_string level)
+    let to_string ~visited state =
+      if Set.mem visited state.name then Symbol.to_string state.name
+      else
+        let visited = Set.add visited state.name in
+        (* FIXME: these have cycles, keep track of all printed vars and prefix them as params with constrain *)
+        let lower_bounds =
+          List.map state.lower_bounds ~f:(fun bound ->
+              Simple_type.to_string ~visited bound)
+        in
+        let lower_bounds = String.concat ~sep:" | " lower_bounds in
+        let upper_bounds =
+          List.map state.upper_bounds ~f:(fun bound ->
+              Simple_type.to_string ~visited bound)
+        in
+        let upper_bounds = String.concat ~sep:" | " upper_bounds in
+        Printf.sprintf "%s%s'%s%s%s%s" lower_bounds
+          (if String.is_empty lower_bounds then "" else " <: ")
+          (Symbol.to_string state.name)
+          (if String.is_empty upper_bounds then "" else " <: ")
+          upper_bounds
+          (Level.to_string state.level)
   end
 
   include T
@@ -273,6 +285,71 @@ module Polar = struct
   end
 end
 
+module Type = struct
+  module T = struct
+    type t =
+      | Ty_any
+      | Ty_void
+      | Ty_union of { lhs : t; rhs : t }
+      | Ty_intersection of { lhs : t; rhs : t }
+      | Ty_function of { argument : t; result : t }
+      | Ty_unit
+      | Ty_tuple of { first : t; second : t; rest : t list }
+      | Ty_vector of { read : t; write : t }
+      | Ty_reference of { read : t; write : t }
+      | Ty_record of { fields : (Symbol.t * t) list }
+      | Ty_recursive of { name : Symbol.t; body : t }
+      | Ty_variable of { name : Symbol.t }
+      | Ty_mutable of { read : t; write : t }
+      | Ty_int
+      | Ty_float
+      | Ty_bool
+      | Ty_char
+      | Ty_string
+    [@@deriving compare, sexp, equal]
+
+    let rec to_string = function
+      | Ty_any -> "any"
+      | Ty_void -> "void"
+      | Ty_mutable { read; write } ->
+          "mut[" ^ to_string read ^ ", " ^ to_string write ^ "]"
+      | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
+      | Ty_intersection { lhs; rhs } -> to_string lhs ^ " + " ^ to_string rhs
+      | Ty_function { argument; result } ->
+          to_string argument ^ " -> " ^ to_string result
+      | Ty_unit -> "()"
+      | Ty_tuple { first; second; rest } ->
+          let rest = List.map rest ~f:to_string in
+          let rest = String.concat ~sep:", " rest in
+          let rest = if String.is_empty rest then rest else ", " ^ rest in
+          "(" ^ to_string first ^ ", " ^ to_string second ^ rest ^ ")"
+      | Ty_vector { read; write } ->
+          "vector[" ^ to_string read ^ ", " ^ to_string write ^ "]"
+      | Ty_reference { read; write } ->
+          let read = to_string read in
+          let write = to_string write in
+          "ref[" ^ read ^ ", " ^ write ^ "]"
+      | Ty_record { fields } ->
+          let fields =
+            List.map fields ~f:(fun (name, type') ->
+                Symbol.to_string name ^ ": " ^ to_string type')
+          in
+          let fields = String.concat ~sep:", " fields in
+          "{" ^ fields ^ "}"
+      | Ty_recursive { name; body } ->
+          to_string body ^ " as " ^ Symbol.to_string name
+      | Ty_variable { name } -> "'" ^ Symbol.to_string name
+      | Ty_float -> "float"
+      | Ty_int -> "int"
+      | Ty_bool -> "bool"
+      | Ty_char -> "char"
+      | Ty_string -> "string"
+  end
+
+  include T
+  include Comparable.Make (T)
+end
+
 module Primop = struct
   type t =
     | Tint_add
@@ -299,6 +376,8 @@ module Primop = struct
     | Tfloat_neg
     | Tbool_eq
     | Tbool_ne
+    | Tstr_concat
+    | Tvector_concat
   [@@deriving sexp, compare]
 end
 
@@ -307,6 +386,8 @@ module rec T : sig
     | Tint of { value : int; span : (Span.span[@compare.ignore]) }
     | Tfloat of { value : float; span : (Span.span[@compare.ignore]) }
     | Tbool of { value : bool; span : (Span.span[@compare.ignore]) }
+    | Tchar of { value : char; span : (Span.span[@compare.ignore]) }
+    | Tstring of { value : string; span : (Span.span[@compare.ignore]) }
     | Tvar of {
         value : Symbol.t;
         span : (Span.span[@compare.ignore]);
@@ -415,6 +496,8 @@ end = struct
     | Tint of { value : int; span : (Span.span[@compare.ignore]) }
     | Tfloat of { value : float; span : (Span.span[@compare.ignore]) }
     | Tbool of { value : bool; span : (Span.span[@compare.ignore]) }
+    | Tchar of { value : char; span : (Span.span[@compare.ignore]) }
+    | Tstring of { value : string; span : (Span.span[@compare.ignore]) }
     | Tvar of {
         value : Symbol.t;
         span : (Span.span[@compare.ignore]);
@@ -523,6 +606,8 @@ end = struct
     | Tint _ -> Sint_type
     | Tfloat _ -> Sfloat_type
     | Tbool _ -> Sbool_type
+    | Tchar _ -> Schar_type
+    | Tstring _ -> Sstring_type
     | Tvar { type'; _ } -> type'
     | Ttuple { first; second; rest; _ } ->
         Stuple_type
@@ -554,6 +639,8 @@ end = struct
       | Tint { span; _ }
       | Tbool { span; _ }
       | Tfloat { span; _ }
+      | Tchar { span; _ }
+      | Tstring { span; _ }
       | Tvar { span; _ }
       | Tapp { span; _ }
       | Tunit { span; _ }

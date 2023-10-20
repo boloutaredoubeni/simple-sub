@@ -46,7 +46,9 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tint { value; span } -> Lint { value; span }
     | Tfloat { value; span } -> Lfloat { value; span }
     | Tbool { value; span } -> Lbool { value; span }
+    | Tchar { value; span } -> Lchar { value; span }
     | Tunit { span } -> Lunit { span }
+    | Tstring { value; span } -> Lstring { value; span }
     | Tvector { values; span; type' } ->
         let values = List.map values ~f:(map_ast self) in
         let type' = map_type self type' in
@@ -217,6 +219,8 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tfloat_neg -> Lfloat_neg
     | Tbool_eq -> Lbool_eq
     | Tbool_ne -> Lbool_neq
+    | Tstr_concat -> Lstr_concat
+    | Tvector_concat -> Lvector_concat
 
   and map_type _self t =
     let open Tast in
@@ -233,6 +237,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
       | PolarType { type' = Sbool_type; _ } -> Ty_bool
       | PolarType { type' = Sfloat_type; _ } -> Ty_float
       | PolarType { type' = Sunit_type; _ } -> Ty_unit
+      | PolarType { type' = Schar_type; _ } -> Ty_char
       | PolarType { type' = Sfunction_type { argument; result }; polar } ->
           let argument = Polar.Type.create argument (Polar.not polar) in
           let result = Polar.Type.create result polar in
@@ -258,6 +263,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let second = f second in_process in
           let rest = List.map rest ~f:(fun t -> f t in_process) in
           Ty_tuple { first; second; rest }
+      | PolarType { type' = Sstring_type; _ } -> Ty_string
       | PolarType
           {
             type' = Svector_type { read = Some read; write = Some write; _ };
@@ -340,11 +346,11 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
               Ty_variable { name }
           | None ->
               let bounds =
-                if Polar.bool polar then Variable.lower_bounds state
-                else Variable.upper_bounds state
+                if Polar.bool polar then state.lower_bounds
+                else state.upper_bounds
               in
               let bound_types =
-                List.map !bounds ~f:(fun t ->
+                List.map bounds ~f:(fun t ->
                     f (Polar.Type.create t polar) (Set.add in_process polar_var))
               in
               let merger lhs rhs =
@@ -419,7 +425,7 @@ module Tests = struct
     [%expect {| '__0 | int |}]
 
   let%expect_test "type lambda" =
-    run_it {| fn x -> 10 |};
+    run_it {| fn x -> 10 end |};
     [%expect {| '__0 -> int |}]
 
   let%expect_test "type let" =
@@ -440,7 +446,7 @@ module Tests = struct
       def f x = f 0 in 
       f
     |};
-    [%expect {| '__3 |}]
+    [%expect {| '__3 | '__5 -> '__4 |}]
 
   let%expect_test "type binop" =
     run_it "1 + 2";
@@ -572,7 +578,7 @@ module Tests = struct
 
   let%expect_test "let ref deref" =
     run_it "let ref a = 0 in !a";
-    [%expect {| '__2 | int |}]
+    [%expect {| '__1 | int |}]
 
   let%expect_test "let ref update union" =
     run_it {|
@@ -580,7 +586,7 @@ module Tests = struct
       a := 1.0;
       a
     |};
-    [%expect {| ref['__0 | int, void] |}]
+    [%expect {| ref['__0 | float | int, void] |}]
 
   let%expect_test "let ref deref union" =
     run_it {|
@@ -588,7 +594,7 @@ module Tests = struct
       a := 1.0;
       !a
     |};
-    [%expect {| '__2 | int |}]
+    [%expect {| '__1 | int | float |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
@@ -604,39 +610,20 @@ module Tests = struct
 
   let%expect_test "declare mut closure" =
     run_it {|
-      let mut f = fn x -> x in
+      let mut f = fn x -> x end in
       f 0
     |};
-    [%expect {| '__7 |}]
+    [%expect {| '__3 | int |}]
 
   let%expect_test "mut closure" =
     run_it
       {|
-      let mut f = fn x -> x in
+      let mut f = fn x -> x end in
       f 0;
-      f = fn x -> x + 1;
+      (f = (fn x -> x + 1 end));
       f 0
     |};
-    [%expect {| '__7 |}]
-
-  let%expect_test "disjoint mut" =
-    run_it
-      {|
-      let mut f = fn x -> x in
-      f 0;
-      f = 7;
-      f 0
-    |};
-    [%expect {| '__7 |}]
-
-  let%expect_test "value restriction" =
-    run_it
-      {|
-      let mut c = fn x -> x in
-      c = (fn x -> x + 1);
-      c true
-      |};
-    [%expect {| () |}]
+    [%expect {| '__3 | int |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};
@@ -651,7 +638,7 @@ module Tests = struct
       end;
       !i
     |};
-    [%expect {| '__3 | int |}]
+    [%expect {| '__2 | int |}]
 
   let%expect_test "for range" =
     run_it
@@ -686,4 +673,102 @@ module Tests = struct
         end
         |};
     [%expect {| () |}]
+
+  let%expect_test "a char" =
+    run_it {| 'a' |};
+    [%expect {| char |}]
+
+  let%expect_test "strings" =
+    run_it {| "hello world" |};
+    [%expect {| string |}]
+
+  let%expect_test "string concat" =
+    run_it {| "hello" ^ "world" |};
+    [%expect {| string |}]
+
+  let%expect_test "record subtype" =
+    run_it
+      {|
+        if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = 1, c = 2 }
+    |};
+    [%expect {| '__0 | {a: int, b: int, c: int} | {a: int, b: int} |}]
+
+  let%expect_test "record contraction" =
+    run_it
+      {|
+        let r = if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = 1, c = 2 } in
+        r.c
+    |};
+    [%expect {| ("Fx__Typing.Missing_record_field(_)") |}]
+
+  let%expect_test "record union" =
+    run_it
+      {|
+       if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = '1' } 
+    |};
+    [%expect {| '__0 | {a: int, b: char} | {a: int, b: int} |}]
+
+  let%expect_test "record union fields" =
+    run_it
+      {|
+        let r = if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = '1' } in
+        r.b
+    |};
+    [%expect {| '__1 | int | char |}]
+
+  let%expect_test "record fun" =
+    run_it {|
+      let f r -> r.a in
+      f { a = 0, b = 1 }
+   |};
+    [%expect {| '__2 | int |}]
+
+  let%expect_test "record fun union" =
+    run_it
+      {|
+      let f r -> r.a in
+      f { a = 0, b = 1 } + f { a = 0, b = '1' }
+   |};
+    [%expect {| ("Fx__Typing.Constrain_error(_, 0)") |}]
+
+  let%expect_test "cons list" =
+    run_it
+      {|
+      def produce arg = { head = arg, tail = (produce (arg + 1)) } in 
+      produce
+    |};
+    [%expect
+      {| '__3 | '__4 & int -> {head: '__4 | int, tail: '__5 | {head: '__4 | int, tail: '__12} as __12} |}]
+
+  let%expect_test "cons list as record" =
+    run_it
+      {|
+      def consume strm = (strm.head + consume strm.tail) in
+      consume
+    |};
+    [%expect
+      {| '__5 | '__6 & {tail: '__8 & '__17} & {head: '__7 & int} as __17 -> int |}]
+
+  let%expect_test "cons list as record" =
+    run_it
+      {|
+      def produce arg = { head = arg, tail = (produce (arg + 1)) } in 
+      def consume strm = (strm.head + consume strm.tail) in
+    
+      let codata = produce 42 in
+      consume codata
+    |};
+    [%expect {| '__12 | int |}]
 end

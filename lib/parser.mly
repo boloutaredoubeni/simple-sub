@@ -3,9 +3,11 @@
     open Text
 %}
 
-%token <int> INT
-%token <float> FLOAT
+%token <Int.t> INT
+%token <Float.t> FLOAT
 %token <Text.Symbol.t> IDENT
+%token <Char.t> CHAR
+%token <String.t> STRING
 %token LET 
 %token MUT REF
 %token COLON_EQUAL BANG
@@ -25,7 +27,8 @@
 %token IF THEN ELSE
 %token COMMA
 %token SEMICOLON
-%token PLUS MINUS STAR SLASH
+%token CARET 
+%token PLUS MINUS STAR SLASH 
 %token PLUS_DOT MINUS_DOT STAR_DOT SLASH_DOT
 %token EQUAL_EQUAL LESS GREATER LESS_EQUAL GREATER_EQUAL NOT_EQUAL
 %token EOF
@@ -43,6 +46,8 @@ simple_expr
     | value = FLOAT { Ufloat { value; span=Span.create $sloc } }
     | TRUE { Ubool { value=true; span=Span.create $sloc } }
     | FALSE { Ubool { value=false; span=Span.create $sloc } }
+    | CHAR { Uchar { value=$1; span=Span.create $sloc } }
+    | STRING { Ustring { value=$1; span=Span.create $sloc } }
     | value = IDENT { Uvar { value; span=Span.create $sloc } }
     | value = IDENT LBRACKET index = expr RBRACKET { Usubscript { value; index; span=Span.create $sloc } }  
     | name = IDENT EQUAL value = expr { Uassign { name; value; span=Span.create $sloc } }
@@ -62,6 +67,7 @@ simple_expr
         | Uint { value; span } -> Uint { value=(-value); span }   
         | _ -> Uneg { value; span=Span.create $sloc }
     }
+    | left = expr CARET right = expr { Uop { op=Op.SAdd; left; right; span=Span.create $sloc } }
     | left = expr PLUS right = expr { Uop { op=Op.Add; left; right; span=Span.create $sloc } }
     | left = expr MINUS right = expr { Uop { op=Op.Sub; left; right; span=Span.create $sloc } }
     | left = expr STAR right = expr { Uop { op=Op.Mul; left; right; span=Span.create $sloc } }
@@ -120,7 +126,7 @@ expr
                 span = Span.create $sloc  
             }
         }
-    | FN parameter = IDENT RIGHT_ARROW value = expr { 
+    | FN parameter = IDENT RIGHT_ARROW value = expr END { 
         let lambda = Uclosure { parameter;  value; span=Span.create $sloc } in 
         Ulambda { closure=lambda }
     }

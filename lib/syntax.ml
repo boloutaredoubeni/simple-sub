@@ -3,6 +3,7 @@ open Text
 
 module Op = struct
   type t =
+    | SAdd
     | Add
     | Sub
     | Mul
@@ -20,6 +21,7 @@ module Op = struct
   [@@deriving compare, sexp]
 
   let to_string = function
+    | SAdd -> "^"
     | Add -> "+"
     | Sub -> "-"
     | Mul -> "*"
@@ -37,19 +39,14 @@ module Op = struct
 end
 
 (*
-   TODO: part 2. cubiml i.e. tags/pattern matching, 1st-class references, nullable, mutual recursion, mutable vs immutable strings, character, row polymorhism?, mutable records, type annotation, let tuple, let record, 
-   TODO: fiber and events, error propagation handling/overflow checks (errors must be matched or rethrown), fiber handlers,  typecasting,, slices, maps, sets, sequences, for comprehensions, early return, break, continue
-   TODO: more advanced type simplification, type monomorphization, pattern match compilation
-   TODO: delimited ir
-   TODO: ownership based reference counting
-   TODO: session types and protocols, threads/futures, channels, tensors, subsumption checking for polymorphic annotations, trailing closures
+   TODO: tags/pattern matching, mutual recursion, row polymorhism?, mutable records, type annotation, let tuple, let record, record punning
+   TODO: fiber and events, error propagation handling/overflow checks (errors must be matched or rethrown), fiber handlers,  typecasting,, slices, maps, sets, sequences, for comprehensions, early return, break, continue, string interpolation, string concatenation, multiline strings
+   TODO: more advanced type simplification, type monomorphization, pattern match compilation, multi arg functions
+   TODO: ownership based reference counting OR immix garbage collection
+   TODO: session types and protocols, threads, channels, tensors, subsumption checking for polymorphic annotations, trailing closures, quotes, metaprogramming
    TODO: tree walk eval
-
-   NOTE: subtyping may solve the function color problem
-   NOTE: continuations vs coroutines vs fibers
 *)
 
-(* TODO: this are binding types *)
 module Mutability = struct
   module T = struct
     type t = Mutable | Immutable | Reference | MutableReference
@@ -85,6 +82,8 @@ type t =
   | Uint of { value : int; span : (Span.span[@compare.ignore]) }
   | Ufloat of { value : float; span : (Span.span[@compare.ignore]) }
   | Ubool of { value : bool; span : (Span.span[@compare.ignore]) }
+  | Uchar of { value : char; span : (Span.span[@compare.ignore]) }
+  | Ustring of { value : string; span : (Span.span[@compare.ignore]) }
   | Uvar of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
   | Uapp of { fn : t; value : t; span : (Span.span[@compare.ignore]) }
   | Uneg of { value : t; span : (Span.span[@compare.ignore]) }
@@ -206,12 +205,14 @@ module Spanned : Span.SPANNED = struct
   let span = function
     | Uint { span; _ }
     | Ubool { span; _ }
+    | Uchar { span; _ }
     | Ufloat { span; _ }
     | Uvar { span; _ }
     | Uapp { span; _ }
     | Urecord { span; _ }
     | Utuple { span; _ }
     | Uvector { span; _ }
+    | Ustring { span; _ }
     | Uslice { span; _ }
     | Utuple_subscript { span; _ }
     | Usubscript { span; _ }

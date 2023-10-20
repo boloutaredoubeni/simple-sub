@@ -71,77 +71,74 @@ functor
           let freshen_above limit ty lvl =
             let freshened =
               object
-                val mutable freshened = Map.empty (module Variable)
-                method get v = Map.find freshened v
+                val mutable freshened = Map.empty (module Symbol)
+                method get (v : Variable.t) = Map.find freshened v.name
 
-                method set v t =
-                  freshened <- Map.add_exn freshened ~key:v ~data:t
+                method set (v : Variable.t) t =
+                  freshened <- Map.add_exn freshened ~key:v.name ~data:t
               end
             in
 
             let rec freshen ty =
-              let type_level = Simple_type.level ty in
-              if Level.compare type_level limit < 1 then ty
-              else
-                match ty with
-                | Smutable { read; write; scope } ->
-                    Smutable
-                      { read = freshen read; write = freshen write; scope }
-                | Svar_type { state } -> (
-                    match freshened#get state with
-                    | Some state -> Svar_type { state }
-                    | None ->
-                        let v =
-                          match Fresh_var.f lvl with
-                          | Svar_type { state } -> state
-                          | _ -> assert false
-                        in
-                        freshened#set state v;
-                        let lower_bounds = Variable.lower_bounds state in
-                        let upper_bounds = Variable.upper_bounds state in
-                        lower_bounds :=
-                          List.rev
-                            (List.map (List.rev !lower_bounds) ~f:(fun t ->
-                                 freshen t));
-                        upper_bounds :=
-                          List.rev
-                            (List.map (List.rev !upper_bounds) ~f:(fun t ->
-                                 freshen t));
-                        Variable.to_simple_type v)
-                | Sfunction_type { argument; result } ->
-                    Sfunction_type
-                      { argument = freshen argument; result = freshen result }
-                | Ssparse_tuple { indices } ->
-                    Ssparse_tuple
-                      {
-                        indices =
-                          List.map indices ~f:(fun (i, t) -> (i, freshen t));
-                      }
-                | Stuple_type { first; second; rest } ->
-                    Stuple_type
-                      {
-                        first = freshen first;
-                        second = freshen second;
-                        rest = List.map rest ~f:freshen;
-                      }
-                | Sreference { read; write; scope } ->
-                    let read = Option.map read ~f:freshen in
-                    let write = Option.map write ~f:freshen in
-                    Sreference { read; write; scope }
-                | Svector_type { read; write; scope } ->
-                    let read = Option.map read ~f:freshen in
-                    let write = Option.map write ~f:freshen in
-                    Svector_type { read; write; scope }
-                | Srecord { fields } ->
-                    Srecord
-                      {
-                        fields =
-                          List.map fields ~f:(fun (f, t) -> (f, freshen t));
-                      }
-                | Sint_type -> Sint_type
-                | Sbool_type -> Sbool_type
-                | Sfloat_type -> Sfloat_type
-                | Sunit_type -> Sunit_type
+              let open Level in
+              match ty with
+              | t when Simple_type.level t <= limit -> t
+              | Smutable { read; write; scope } ->
+                  Smutable { read = freshen read; write = freshen write; scope }
+              | Svar_type { state } when Option.is_some (freshened#get state) ->
+                  Option.value_exn (freshened#get state)
+              | Svar_type { state } ->
+                  let fresh = Fresh_var.f lvl in
+                  freshened#set state fresh;
+                  let fresh =
+                    match fresh with
+                    | Svar_type { state } -> state
+                    | _ -> assert false
+                  in
+                  fresh.lower_bounds <-
+                    List.rev
+                      (List.map (List.rev state.lower_bounds) ~f:(fun t ->
+                           freshen t));
+                  fresh.upper_bounds <-
+                    List.rev
+                      (List.map (List.rev state.upper_bounds) ~f:(fun t ->
+                           freshen t));
+                  Variable.to_simple_type fresh
+              | Sfunction_type { argument; result } ->
+                  Sfunction_type
+                    { argument = freshen argument; result = freshen result }
+              | Ssparse_tuple { indices } ->
+                  Ssparse_tuple
+                    {
+                      indices =
+                        List.map indices ~f:(fun (i, t) -> (i, freshen t));
+                    }
+              | Stuple_type { first; second; rest } ->
+                  Stuple_type
+                    {
+                      first = freshen first;
+                      second = freshen second;
+                      rest = List.map rest ~f:freshen;
+                    }
+              | Sreference { read; write; scope } ->
+                  let read = Option.map read ~f:freshen in
+                  let write = Option.map write ~f:freshen in
+                  Sreference { read; write; scope }
+              | Svector_type { read; write; scope } ->
+                  let read = Option.map read ~f:freshen in
+                  let write = Option.map write ~f:freshen in
+                  Svector_type { read; write; scope }
+              | Srecord { fields } ->
+                  Srecord
+                    {
+                      fields = List.map fields ~f:(fun (f, t) -> (f, freshen t));
+                    }
+              | Sint_type -> Sint_type
+              | Sbool_type -> Sbool_type
+              | Sfloat_type -> Sfloat_type
+              | Sunit_type -> Sunit_type
+              | Schar_type -> Schar_type
+              | Sstring_type -> Sstring_type
             in
             freshen ty
           in
@@ -171,105 +168,103 @@ module Extrude = struct
   end) : T = struct
     let c =
       object
-        val mutable map = Map.empty (module Polar.Variable)
+        val mutable map = Map.empty (module Symbol)
         method add ~key ~data = map <- Map.add_exn map ~key ~data
+        method contains (key : Symbol.t) = Map.mem map key
+        method find_exn (key : Symbol.t) = Map.find_exn map key
 
         method find_or_else key ~else' =
           match Map.find map key with Some v -> v | None -> else' ()
       end
 
     let rec extrude self t =
+      let open Simple_type in
+      let polarity = Polar.Type.polarity t in
+      let create_type t = Polar.Type.create t polarity in
       let open Level in
-      if Polar.Type.level t <= Self.level self then Polar.Type.type_of t
-      else
-        let open Simple_type in
-        let polarity = Polar.Type.polarity t in
-        let create_type t = Polar.Type.create t polarity in
-        match Polar.Type.type_of t with
-        | Sint_type -> Sint_type
-        | Sfloat_type -> Sfloat_type
-        | Sbool_type -> Sbool_type
-        | Sunit_type -> Sunit_type
-        | Smutable { read; write; scope } ->
-            let read = extrude self (create_type read) in
-            let write =
-              extrude self (Polar.Type.create write (Polar.not polarity))
-            in
-            Smutable { read; write; scope }
-        | Sfunction_type { argument; result } ->
-            Sfunction_type
-              {
-                argument =
-                  extrude self (Polar.Type.create argument (Polar.not polarity));
-                result = extrude self (create_type result);
-              }
-        | Ssparse_tuple { indices } ->
-            Ssparse_tuple
-              {
-                indices =
-                  List.map indices ~f:(fun (i, t) ->
-                      (i, extrude self (create_type t)));
-              }
-        | Stuple_type { first; second; rest } ->
-            Stuple_type
-              {
-                first = extrude self (create_type first);
-                second = extrude self (create_type second);
-                rest = List.map rest ~f:(fun t -> extrude self (create_type t));
-              }
-        | Sreference { read; write; scope } ->
-            let read =
-              Option.map read ~f:(fun read -> extrude self (create_type read))
-            in
-            let write =
-              Option.map write ~f:(fun write ->
-                  extrude self (Polar.Type.create write (Polar.not polarity)))
-            in
-            Sreference { read; write; scope }
-        | Svector_type { read; write; scope } ->
-            let read =
-              Option.map read ~f:(fun read -> extrude self (create_type read))
-            in
-            let write =
-              Option.map write ~f:(fun write ->
-                  extrude self (Polar.Type.create write (Polar.not polarity)))
-            in
-            Svector_type { read; write; scope }
-        | Srecord { fields } ->
-            Srecord
-              {
-                fields =
-                  List.map fields ~f:(fun (f, t) ->
-                      (f, extrude self (create_type t)));
-              }
-        | Svar_type { state } ->
-            let polar = Polar.Variable.create state polarity in
-            c#find_or_else polar ~else':(fun () ->
-                let nvs =
-                  Variable.create ~level:(Self.level self)
-                    ~fresher:(module S.Fresh_sym)
-                in
-                let nvs_state =
-                  nvs |> Variable.of_simple_type |> Option.value_exn
-                in
-                c#add ~key:polar ~data:(Svar_type { state = nvs_state });
-                (if Polar.bool polarity then (
-                   let upper_bounds = Variable.upper_bounds state in
-                   upper_bounds :=
-                     Svar_type { state = nvs_state } :: !upper_bounds;
-                   let lower_bounds = Variable.lower_bounds nvs_state in
-                   Variable.lower_bounds nvs_state
-                   := List.map !lower_bounds ~f:(fun ty ->
-                          extrude self (Polar.Type.create ty polarity)))
-                 else
-                   let lower_bounds = Variable.lower_bounds state in
-                   lower_bounds :=
-                     Svar_type { state = nvs_state } :: !lower_bounds;
-                   let upper_bounds = Variable.upper_bounds nvs_state in
-                   Variable.upper_bounds nvs_state
-                   := List.map !upper_bounds ~f:(fun ty ->
-                          extrude self (Polar.Type.create ty polarity)));
-                nvs)
+      match Polar.Type.type_of t with
+      | _ when Polar.Type.level t <= Self.level self -> Polar.Type.type_of t
+      | Sint_type -> Sint_type
+      | Sfloat_type -> Sfloat_type
+      | Sbool_type -> Sbool_type
+      | Sunit_type -> Sunit_type
+      | Schar_type -> Schar_type
+      | Sstring_type -> Sstring_type
+      | Smutable { read; write; scope } ->
+          let read = extrude self (create_type read) in
+          let write =
+            extrude self (Polar.Type.create write (Polar.not polarity))
+          in
+          Smutable { read; write; scope }
+      | Sfunction_type { argument; result } ->
+          Sfunction_type
+            {
+              argument =
+                extrude self (Polar.Type.create argument (Polar.not polarity));
+              result = extrude self (create_type result);
+            }
+      | Ssparse_tuple { indices } ->
+          Ssparse_tuple
+            {
+              indices =
+                List.map indices ~f:(fun (i, t) ->
+                    (i, extrude self (create_type t)));
+            }
+      | Stuple_type { first; second; rest } ->
+          Stuple_type
+            {
+              first = extrude self (create_type first);
+              second = extrude self (create_type second);
+              rest = List.map rest ~f:(fun t -> extrude self (create_type t));
+            }
+      | Sreference { read; write; scope } ->
+          let read =
+            Option.map read ~f:(fun read -> extrude self (create_type read))
+          in
+          let write =
+            Option.map write ~f:(fun write ->
+                extrude self (Polar.Type.create write (Polar.not polarity)))
+          in
+          Sreference { read; write; scope }
+      | Svector_type { read; write; scope } ->
+          let read =
+            Option.map read ~f:(fun read -> extrude self (create_type read))
+          in
+          let write =
+            Option.map write ~f:(fun write ->
+                extrude self (Polar.Type.create write (Polar.not polarity)))
+          in
+          Svector_type { read; write; scope }
+      | Srecord { fields } ->
+          Srecord
+            {
+              fields =
+                List.map fields ~f:(fun (f, t) ->
+                    (f, extrude self (create_type t)));
+            }
+      | Svar_type { state } when c#contains state.name ->
+          Svar_type { state = c#find_exn state.name }
+      | Svar_type { state } ->
+          let nvs =
+            Variable.create ~level:(Self.level self)
+              ~fresher:(module S.Fresh_sym)
+          in
+          let nvs_state = nvs |> Variable.of_simple_type |> Option.value_exn in
+          c#add ~key:state.name ~data:nvs_state;
+          if Polar.bool polarity then (
+            state.upper_bounds <-
+              Svar_type { state = nvs_state } :: state.upper_bounds;
+            nvs_state.lower_bounds <-
+              List.map state.lower_bounds ~f:(fun ty ->
+                  extrude self (Polar.Type.create ty polarity)))
+          else
+            state.lower_bounds <-
+              Svar_type { state = nvs_state } :: state.lower_bounds;
+
+          nvs_state.upper_bounds <-
+            List.map state.upper_bounds ~f:(fun ty ->
+                extrude self (Polar.Type.create ty polarity));
+          nvs
 
     let f t = extrude (Self.create S.level) t
   end
@@ -320,6 +315,7 @@ module Constrain = struct
         | Sfloat_type, Sfloat_type -> ()
         | Sbool_type, Sbool_type -> ()
         | Sunit_type, Sunit_type -> ()
+        | Sstring_type, Sstring_type -> ()
         | Smutable _, Smutable _ -> failwith "mutable type is not allowed yet"
         | Smutable _, _ ->
             failwith "mutable type is not allowed yet (mutable is lhs)"
@@ -413,18 +409,14 @@ module Constrain = struct
                 | None -> raise (Missing_record_field { value = rhs_field }))
         | Svar_type { state = lhs_state }, rhs
           when Simple_type.level rhs <= Variable.level lhs_state ->
-            Variable.upper_bounds lhs_state
-            := rhs :: !(Variable.upper_bounds lhs_state);
-            List.iter
-              !(Variable.lower_bounds lhs_state)
-              ~f:(fun lhs -> constrain (Constraint { lhs; rhs }))
+            lhs_state.upper_bounds <- rhs :: lhs_state.upper_bounds;
+            List.iter lhs_state.lower_bounds ~f:(fun lhs ->
+                constrain (Constraint { lhs; rhs }))
         | lhs, Svar_type { state = rhs_state }
           when Simple_type.level lhs <= Variable.level rhs_state ->
-            Variable.lower_bounds rhs_state
-            := lhs :: !(Variable.lower_bounds rhs_state);
-            List.iter
-              !(Variable.upper_bounds rhs_state)
-              ~f:(fun rhs -> constrain (Constraint { lhs; rhs }))
+            rhs_state.lower_bounds <- lhs :: rhs_state.lower_bounds;
+            List.iter rhs_state.upper_bounds ~f:(fun rhs ->
+                constrain (Constraint { lhs; rhs }))
         | (Svar_type { state = lhs_state } as lhs), rhs ->
             let level = Variable.level lhs_state in
             let rhs = extrude rhs (Polar.of_bool false) level in
@@ -433,14 +425,7 @@ module Constrain = struct
             let level = Variable.level rhs_state in
             let lhs = extrude lhs (Polar.of_bool true) level in
             constrain (Constraint { lhs; rhs })
-        | lhs, rhs ->
-            (* let string =
-                 Printf.sprintf "lhs: %s rhs: %s"
-                   (Simple_type.to_string lhs)
-                   (Simple_type.to_string rhs)
-               in
-               print_endline string; *)
-            raise (Constrain_error { lhs; rhs }))
+        | lhs, rhs -> raise (Constrain_error { lhs; rhs }))
       else ()
   end
 end
@@ -517,10 +502,24 @@ functor
       | Uint { value; span } -> Tint { value; span }
       | Ufloat { value; span } -> Tfloat { value; span }
       | Ubool { value; span } -> Tbool { value; span }
+      | Uchar { value; span } -> Tchar { value; span }
+      | Ustring { value; span } -> Tstring { value; span }
       | Uneg { value; span } ->
           let value = map_ast self value in
           constrain (Tast.T.type_of value) Sint_type;
           Tprimop { op = Tint_neg; args = [ value ]; span; type' = Sint_type }
+      | Uop { op = SAdd; left; right; span } ->
+          let left = map_ast self left in
+          let right = map_ast self right in
+          constrain (Tast.T.type_of left) Sstring_type;
+          constrain (Tast.T.type_of right) Sstring_type;
+          Tprimop
+            {
+              op = Tstr_concat;
+              args = [ left; right ];
+              span;
+              type' = Sstring_type;
+            }
       | Uop { op = (Add | Sub | Mul | Div) as int_op; left; right; span } ->
           let left = map_ast self left in
           let right = map_ast self right in
@@ -637,9 +636,7 @@ functor
               { read = Some read; write = Some write; scope = Scope.Global }
           in
           Tvector { values; span; type' }
-      | Uvector { mutability = Mutability.MutableReference; _ } ->
-          (* This will never be parsed *)
-          assert false
+      | Uvector { mutability = Mutability.MutableReference; _ } -> assert false
       | Uslice { value; readability = Readability.Readonly; span }
         when Self.contains self value ->
           let type' =
@@ -664,15 +661,10 @@ functor
                      })
             | ty ->
                 let level = Self.level self in
-                let read = S.Fresh_var.f level in
-                let write = S.Fresh_var.f level in
+                let res = S.Fresh_var.f level in
                 let expected =
                   Sreference
-                    {
-                      read = Some read;
-                      write = Some write;
-                      scope = Scope.Global;
-                    }
+                    { read = Some res; write = Some res; scope = Scope.Global }
                 in
                 raise (Type_error { expected; actual = ty; span })
           in
@@ -701,15 +693,10 @@ functor
                      })
             | ty ->
                 let level = Self.level self in
-                let read = S.Fresh_var.f level in
-                let write = S.Fresh_var.f level in
+                let res = S.Fresh_var.f level in
                 let expected =
                   Svector_type
-                    {
-                      read = Some read;
-                      write = Some write;
-                      scope = Scope.Global;
-                    }
+                    { read = Some res; write = Some res; scope = Scope.Global }
                 in
                 raise (Type_error { expected; actual = ty; span })
           in
@@ -749,10 +736,9 @@ functor
                 raise (Type_error { expected; actual; span })
             | ty ->
                 let level = Self.level self in
-                let read = S.Fresh_var.f level in
-                let write = S.Fresh_var.f level in
+                let res = S.Fresh_var.f level in
                 let scope = Self.scope self in
-                let expected = Smutable { read; write; scope } in
+                let expected = Smutable { read = res; write = res; scope } in
                 raise (Type_error { expected; actual = ty; span })
           in
           let value = map_ast self value in
@@ -826,12 +812,11 @@ functor
             | ty ->
                 let level = Self.level self in
                 let read = S.Fresh_var.f level in
-                let write = S.Fresh_var.f level in
                 let expected =
                   Sreference
                     {
                       read = Some read;
-                      write = Some write;
+                      write = Some read;
                       scope = Scope.Global;
                     }
                 in
@@ -882,8 +867,8 @@ functor
               span;
             }
       | Uselect { value; field; span } ->
-          let res = S.Fresh_var.f (Self.level self) in
           let value = map_ast self value in
+          let res = S.Fresh_var.f (Self.level self) in
           constrain (Tast.T.type_of value)
             (Simple_type.Srecord { fields = [ (field, res) ] });
           Tselect { value; field; span; type' = res }
@@ -917,12 +902,10 @@ functor
           let level = Self.level self in
           let type' = Tast.T.type_of value in
           let read = S.Fresh_var.f level in
-          let write = S.Fresh_var.f level in
           constrain type' read;
-          constrain type' write;
           let type' =
             Simple_type.Sreference
-              { read = Some read; write = Some write; scope = Self.scope self }
+              { read = Some read; write = Some read; scope = Self.scope self }
           in
           let scheme = TypeScheme.of_simple_type type' in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
@@ -940,12 +923,10 @@ functor
           let level = Self.level self in
           let type' = Tast.T.type_of value in
           let read = S.Fresh_var.f level in
-          let write = S.Fresh_var.f level in
           constrain type' read;
-          constrain type' write;
           let type' =
             Simple_type.Sreference
-              { read = Some read; write = Some write; scope = Scope.global }
+              { read = Some read; write = Some read; scope = Scope.global }
           in
           let scheme = TypeScheme.of_simple_type type' in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
@@ -956,11 +937,9 @@ functor
           let level = Self.level self in
           let type' = Tast.T.type_of value in
           let read = S.Fresh_var.f level in
-          let write = S.Fresh_var.f level in
           constrain type' read;
-          constrain type' write;
           let type' =
-            Simple_type.Smutable { read; write; scope = Self.scope self }
+            Simple_type.Smutable { read; write = read; scope = Self.scope self }
           in
           let scheme = TypeScheme.of_simple_type type' in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
@@ -981,9 +960,9 @@ functor
       | Udef { name; closure; app; span } ->
           let expr = S.Fresh_var.f (Level.level_up (Self.level self)) in
           let closure =
+            let self = Self.level_up self in
             let type' = TypeScheme.of_simple_type expr in
             let self = Self.add self ~key:name ~data:type' in
-            let self = Self.level_up self in
             map_closure self closure
           in
           constrain (Tast.Closure.type_of closure) expr;
@@ -1034,8 +1013,7 @@ functor
             constrain (Tast.T.type_of start) Sint_type;
             let finish = map_ast (Self.level_up self) finish in
             constrain (Tast.T.type_of finish) Sint_type;
-            let type' = PolymorhicType.create (Self.level self) Sint_type in
-            let scheme = TypeScheme.of_polymorphic_type type' in
+            let scheme = TypeScheme.of_simple_type Sint_type in
             let self = Self.add self ~key:name ~data:scheme in
             let self, rest = loop self rest in
             let type' = TypeScheme.instantiate scheme (Self.level self) in
@@ -1093,16 +1071,25 @@ module Tests = struct
        in
        let (module Visitor) = (module Make (S) : MAPPER) in
        let%bind t = Visitor.map ast in
-       t |> Tast.T.type_of |> Simple_type.to_string |> Ok)
+       t |> Tast.T.type_of
+       |> Simple_type.to_string ~visited:(Set.empty (module Symbol))
+       |> Ok)
       |> Or_error.ok_exn |> print_endline
     with
     | () -> ()
     | exception Type_error { expected; actual; span } ->
         print_endline
           (Printf.sprintf "Type error\n  expected: %s\n  actual: %s\n  span: %s"
-             (Simple_type.to_string expected)
-             (Simple_type.to_string actual)
+             (Simple_type.to_string
+                ~visited:(Set.empty (module Symbol))
+                expected)
+             (Simple_type.to_string ~visited:(Set.empty (module Symbol)) actual)
              (Span.to_string span))
+    | exception Constrain_error { lhs; rhs } ->
+        print_endline
+          (Printf.sprintf "Constrain error\n  lhs: %s\n  rhs: %s"
+             (Simple_type.to_string ~visited:(Set.empty (module Symbol)) lhs)
+             (Simple_type.to_string ~visited:(Set.empty (module Symbol)) rhs))
     | exception exn -> print_endline (Exn.to_string exn)
 
   let%expect_test "type empty file" =
@@ -1134,7 +1121,7 @@ module Tests = struct
     [%expect {| int <: '__0 |}]
 
   let%expect_test "type lambda" =
-    run_it {| fn x -> 10 |};
+    run_it {| fn x -> 10 end |};
     [%expect {| '__0 -> int |}]
 
   let%expect_test "type let" =
@@ -1151,10 +1138,10 @@ module Tests = struct
 
   let%expect_test "type def function" =
     run_it {|
-      def f x = f 0 in 
-      f
-    |};
-    [%expect {| '__3 |}]
+       def f x = f 0 in
+       f
+     |};
+    [%expect {| int <: '__5 -> '__4 <: __4 <: '__3 <: int -> '__4 <: __4 |}]
 
   let%expect_test "type binop" =
     run_it "1 + 2";
@@ -1182,7 +1169,10 @@ module Tests = struct
 
   let%expect_test "bad binop" =
     run_it "1 + 0.67";
-    [%expect {| ("Fx__Typing.Constrain_error(1, 0)") |}]
+    [%expect {|
+      Constrain error
+        lhs: float
+        rhs: int |}]
 
   let%expect_test "bool eq" =
     run_it "true == false";
@@ -1404,7 +1394,7 @@ module Tests = struct
       let ys = &mut xs[..] in
       let f x -> ys[1] in
       f () |};
-    [%expect {| '__4 |}]
+    [%expect {| int <: '__4 |}]
 
   let%expect_test "passed readonly vectors cannot be written" =
     run_it
@@ -1439,7 +1429,7 @@ module Tests = struct
       let xs = ref [| 0, 1|] in
       let f ys -> ys[1] in
       f xs[..] |};
-    [%expect {| '__4 |}]
+    [%expect {| int <: '__4 |}]
 
   let%expect_test "passed readonly vectors cannot be made writable" =
     run_it
@@ -1452,7 +1442,7 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: vector['__3 @ 2, '__4 @ 2]
+       expected: vector['__3 @ 2, '__3 @ 2]
        actual: '__2 @ 1
        span: stdin:4:17:4:28 |}]
 
@@ -1474,7 +1464,7 @@ module Tests = struct
 
   let%expect_test "let ref deref" =
     run_it "let ref a = 0 in !a";
-    [%expect {| int <: '__2 |}]
+    [%expect {| int <: '__1 |}]
 
   let%expect_test "let ref update union" =
     run_it {|
@@ -1482,7 +1472,7 @@ module Tests = struct
       a := 1.0;
       a
     |};
-    [%expect {| ref[int <: '__0, _] @ 0 |}]
+    [%expect {| ref[float | int <: '__0, _] @ 0 |}]
 
   let%expect_test "let ref deref union" =
     run_it {|
@@ -1490,7 +1480,7 @@ module Tests = struct
       a := 1.0;
       !a
     |};
-    [%expect {| int <: '__2 |}]
+    [%expect {| int | float <: '__1 |}]
 
   let%expect_test "seq" =
     run_it "1; 2";
@@ -1508,45 +1498,65 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: mut[int <: '__0, int <: '__1] @ 1
-       actual: mut[int <: '__0, int <: '__1] @ 0
+       expected: mut[int <: '__0, int <: '__0] @ 1
+       actual: mut[int <: '__0, int <: '__0] @ 0
        span: stdin:3:17:3:22 |}]
 
   let%expect_test "declare mut closure" =
     run_it {|
-      let mut f = fn x -> x in
+      let mut f = fn x -> x end in
       f 0
     |};
-    [%expect {| '__7 |}]
+    [%expect {| int <: '__3 |}]
 
   let%expect_test "mut closure" =
     run_it
       {|
-      let mut f = fn x -> x in
+      let mut f = fn x -> x end in
       f 0;
-      f = fn x -> x + 1;
+      (f = (fn x -> x + 1 end)) ;
       f 0
     |};
-    [%expect {| '__7 |}]
+    [%expect {| int <: '__3 |}]
 
   let%expect_test "disjoint mut" =
     run_it
       {|
-      let mut f = fn x -> x in
-      f 0;
-      f = 7;
+      let mut f = fn x -> x end in
+      (f 0);
+      (f = 7);
       f 0
     |};
-    [%expect {| '__7 |}]
+    [%expect
+      {|
+      Constrain error
+        lhs: int
+        rhs: int -> int <: '__3 |}]
 
   let%expect_test "value restriction" =
     run_it
       {|
-      let mut c = fn x -> x in
-      c = (fn x -> x + 1);
+      let mut c = fn x -> x end in
+      (c = (fn x -> x + 1 end));
       c true
       |};
-    [%expect {| () |}]
+    [%expect
+      {|
+        Constrain error
+          lhs: bool
+          rhs: int |}]
+
+  let%expect_test "value restriction ref" =
+    run_it
+      {|
+      let ref c = fn x -> x end in
+      (c := (fn x -> x + 1 end));
+      !c true
+      |};
+    [%expect {|
+     Constrain error
+       lhs: bool
+       rhs: int |}]
 
   let%expect_test "forever" =
     run_it {| for do () end |};
@@ -1561,7 +1571,7 @@ module Tests = struct
       end;
       i
     |};
-    [%expect {| int <: '__0 <: int |}]
+    [%expect {| int | int <: '__0 <: int |}]
 
   let%expect_test "ref counter loop" =
     run_it
@@ -1572,7 +1582,7 @@ module Tests = struct
       end;
       !i
     |};
-    [%expect {| int <: '__3 |}]
+    [%expect {| int <: '__2 |}]
 
   let%expect_test "for range" =
     run_it
@@ -1621,8 +1631,8 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: ref[int <: '__0, int <: '__1]
-       actual: ref[int <: '__0, int <: '__1] @ 0
+       expected: ref[int <: '__0, int <: '__0]
+       actual: ref[int <: '__0, int <: '__0] @ 0
        span: stdin:3:6:3:13 |}]
 
   let%expect_test "readonly reference cannot be written" =
@@ -1643,14 +1653,14 @@ module Tests = struct
       let ref mut xs = 0 in
       let ys = &mut xs in
       !ys |};
-    [%expect {| int <: '__2 |}]
+    [%expect {| int <: '__1 |}]
 
   let%expect_test "readonly reference can be read" =
     run_it {|
       let ref mut xs = 0 in
       let ys = xs in
       !ys |};
-    [%expect {| int <: '__2 |}]
+    [%expect {| int <: '__1 |}]
 
   let%expect_test "readwrite reference be written" =
     run_it
@@ -1670,7 +1680,7 @@ module Tests = struct
     [%expect
       {|    
       Type error
-        expected: ref[_, '__2 @ 1]
+        expected: ref[_, '__1 @ 1]
         actual: ref[int <: '__0, _]
         span: stdin:4:17:4:24 |}]
 
@@ -1681,7 +1691,7 @@ module Tests = struct
       let ys = &mut xs in
       let f x -> ys in
       f () |};
-    [%expect {| ref[int <: '__0, _]  <: '__3 |}]
+    [%expect {| ref[int <: '__0, _]  <: '__2 |}]
 
   let%expect_test "passed readonly reference cannot be written" =
     run_it
@@ -1693,7 +1703,7 @@ module Tests = struct
       {| 
       Type error
         expected: ref[_, int]
-        actual: '__2 @ 1
+        actual: '__1 @ 1
         span: stdin:3:18:3:26|}]
 
   let%expect_test "passed readwrite reference cannot be written without \
@@ -1707,7 +1717,7 @@ module Tests = struct
       {| 
       Type error
         expected: ref[_, int]
-        actual: '__2 @ 1
+        actual: '__1 @ 1
         span: stdin:3:18:3:26 |}]
 
   let%expect_test "passed readonly reference be read" =
@@ -1729,7 +1739,110 @@ module Tests = struct
     [%expect
       {|
         Type error
-          expected: ref['__3 @ 2, '__4 @ 2]
-          actual: '__2 @ 1
+          expected: ref['__2 @ 2, '__2 @ 2]
+          actual: '__1 @ 1
           span: stdin:4:17:4:24 |}]
+
+  let%expect_test "a char" =
+    run_it {| 'a' |};
+    [%expect {| char |}]
+
+  let%expect_test "strings" =
+    run_it {| "hello world" |};
+    [%expect {| string |}]
+
+  let%expect_test "string concat" =
+    run_it {| "hello" ^ "world" |};
+    [%expect {| string |}]
+
+  let%expect_test "record subtype" =
+    run_it
+      {|
+        if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = 1, c = 2 }
+    |};
+    [%expect {| {a: int, b: int, c: int} | {a: int, b: int} <: '__0 |}]
+
+  let%expect_test "record contraction" =
+    run_it
+      {|
+        let r = if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = 1, c = 2 } in
+        r.c
+    |};
+    [%expect {| ("Fx__Typing.Missing_record_field(_)") |}]
+
+  let%expect_test "record union" =
+    run_it
+      {|
+       if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = '1' } 
+
+    |};
+    [%expect {| {a: int, b: char} | {a: int, b: int} <: '__0 |}]
+
+  let%expect_test "record union fields" =
+    run_it
+      {|
+        let r = if true then
+          { a = 0, b = 1 }
+        else
+          { a = 0, b = '1' } in
+        r.b
+    |};
+    [%expect {| int | char <: '__1 |}]
+
+  let%expect_test "record fun" =
+    run_it {|
+      let f r -> r.a in
+      f { a = 0, b = 1 }
+   |};
+    [%expect {| int <: '__2 |}]
+
+  let%expect_test "record fun union" =
+    run_it
+      {|
+      let f r -> r.a in
+      f { a = 0, b = 1 } + f { a = 0, b = '1' }
+   |};
+    [%expect
+      {|
+       Constrain error
+         lhs: {a: int, b: int}
+         rhs: int |}]
+
+  let%expect_test "cons list" =
+    run_it
+      {|
+         def produce arg = { head = arg, tail = (produce (arg + 1)) } in
+         produce
+       |};
+    [%expect
+      {| int <: '__4 <: int -> {head: int <: '__4 <: int, tail: {head: int <: '__4 <: int, tail: __5} <: '__5} <: '__3 <: int -> {head: int <: '__4 <: int, tail: __5} <: '__5 |}]
+
+  let%expect_test "cons list as record" =
+    run_it
+      {|
+         def consume strm = (strm.head + consume strm.tail) in
+         consume
+       |};
+    [%expect
+      {| '__6 <: {tail: '__8 <: __6} | {head: '__7 <: int} -> int <: '__5 <: '__8 <: '__6 <: {tail: __8} | {head: '__7 <: int} -> int <: '__9 <: int |}]
+
+  let%expect_test "cons list as record" =
+    run_it
+      {|
+      def produce arg = { head = arg, tail = (produce (arg + 1)) } in 
+      def consume strm = (strm.head + consume strm.tail) in
+    
+      let codata = produce 42 in
+      consume codata
+    |};
+    [%expect {| int <: '__12 |}]
 end

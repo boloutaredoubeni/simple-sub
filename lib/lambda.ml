@@ -20,6 +20,8 @@ module Type = struct
       | Ty_int
       | Ty_float
       | Ty_bool
+      | Ty_char
+      | Ty_string
     [@@deriving compare, sexp, equal]
 
     let rec to_string = function
@@ -28,7 +30,7 @@ module Type = struct
       | Ty_mutable { read; write } ->
           "mut[" ^ to_string read ^ ", " ^ to_string write ^ "]"
       | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
-      | Ty_intersection { lhs; rhs } -> to_string lhs ^ " + " ^ to_string rhs
+      | Ty_intersection { lhs; rhs } -> to_string lhs ^ " & " ^ to_string rhs
       | Ty_function { argument; result } ->
           to_string argument ^ " -> " ^ to_string result
       | Ty_unit -> "()"
@@ -51,11 +53,13 @@ module Type = struct
           let fields = String.concat ~sep:", " fields in
           "{" ^ fields ^ "}"
       | Ty_recursive { name; body } ->
-          "\\" ^ Symbol.to_string name ^ "." ^ to_string body
+          to_string body ^ " as " ^ Symbol.to_string name
       | Ty_variable { name } -> "'" ^ Symbol.to_string name
       | Ty_float -> "float"
       | Ty_int -> "int"
       | Ty_bool -> "bool"
+      | Ty_char -> "char"
+      | Ty_string -> "string"
   end
 
   include T
@@ -67,6 +71,7 @@ module rec T : sig
     | Lint of { value : int; span : (Span.span[@compare.ignore]) }
     | Lfloat of { value : float; span : (Span.span[@compare.ignore]) }
     | Lbool of { value : bool; span : (Span.span[@compare.ignore]) }
+    | Lchar of { value : char; span : (Span.span[@compare.ignore]) }
     | Lvar of {
         value : Symbol.t;
         span : (Span.span[@compare.ignore]);
@@ -91,6 +96,7 @@ module rec T : sig
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
+    | Lstring of { value : string; span : (Span.span[@compare.ignore]) }
     | Lvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
@@ -174,6 +180,7 @@ end = struct
     | Lint of { value : int; span : (Span.span[@compare.ignore]) }
     | Lfloat of { value : float; span : (Span.span[@compare.ignore]) }
     | Lbool of { value : bool; span : (Span.span[@compare.ignore]) }
+    | Lchar of { value : char; span : (Span.span[@compare.ignore]) }
     | Lvar of {
         value : Symbol.t;
         span : (Span.span[@compare.ignore]);
@@ -198,6 +205,7 @@ end = struct
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
+    | Lstring of { value : string; span : (Span.span[@compare.ignore]) }
     | Lvector of {
         values : t list;
         span : (Span.span[@compare.ignore]);
@@ -281,6 +289,7 @@ end = struct
     | Lint _ -> Ty_int
     | Lfloat _ -> Ty_float
     | Lbool _ -> Ty_bool
+    | Lchar _ -> Ty_char
     | Lunit _ | Lassign _ | Lassign_subscript _ | Lupdate_ref _ -> Ty_unit
     | Lvar { type'; _ } -> type'
     | Ltuple { first; second; rest; _ } ->
@@ -290,6 +299,7 @@ end = struct
             second = type_of second;
             rest = List.map rest ~f:(fun t -> type_of t);
           }
+    | Lstring _ -> Ty_string
     | Lvector { type'; _ } -> type'
     | Ltuple_subscript { type'; _ } -> type'
     | Lsubscript { type'; _ } -> type'
@@ -310,12 +320,14 @@ end = struct
 
     let span = function
       | Lint { span; _ }
+      | Lchar { span; _ }
       | Lfloat { span; _ }
       | Lbool { span; _ }
       | Lunit { span; _ }
       | Lvar { span; _ }
       | Lapp { span; _ }
       | Ltuple { span; _ }
+      | Lstring { span; _ }
       | Lvector { span; _ }
       | Ltuple_subscript { span; _ }
       | Lsubscript { span; _ }
@@ -405,6 +417,8 @@ and Primop : sig
     | Lfloat_ge
     | Lbool_eq
     | Lbool_neq
+    | Lstr_concat
+    | Lvector_concat
   [@@deriving compare, sexp]
 end = struct
   type t =
@@ -432,6 +446,8 @@ end = struct
     | Lfloat_ge
     | Lbool_eq
     | Lbool_neq
+    | Lstr_concat
+    | Lvector_concat
   [@@deriving compare, sexp]
 end
 
