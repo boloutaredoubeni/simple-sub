@@ -54,7 +54,7 @@ module Tests = struct
   let%expect_test "record" =
     run_it "{x=1}";
     [%expect
-      {| (Urecord(fields(((Symbol x)(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 5)))))) |}]
+      {| (Urecord(proto())(fields(((Symbol x)(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 5)))))) |}]
 
   let%expect_test "field select" =
     run_it "x.y";
@@ -138,6 +138,11 @@ module Tests = struct
     run_it "(1, 2)";
     [%expect
       {| (Utuple(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))(Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5))))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))) |}]
+
+  let%expect_test "record punning" =
+    run_it "{x}";
+    [%expect
+      {| (Urecord(proto())(fields(((Symbol x)(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2)))))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 3)))))) |}]
 
   let%expect_test "tuple single" =
     (* TODO: interpret as box[T] *)
@@ -339,4 +344,30 @@ module Tests = struct
     run_it {| "hello" ^ "world" |};
     [%expect
       {| (Uop(op SAdd)(left(Ustring(value hello)(span(Span(filename stdin)(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8)))))))(right(Ustring(value world)(span(Span(filename stdin)(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 18)))))) |}]
+
+  let%expect_test "iife" =
+    run_it {| (fn x -> x end) 0 |};
+    [%expect
+      {| (Uapp(fn(Utuple(values((Ulambda(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 11)))))))(span(Span(filename stdin)(start(Position(line 1)(column 2)))(finish(Position(line 1)(column 15))))))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 16)))))))(value(Uint(value 0)(span(Span(filename stdin)(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 18)))))) |}]
+
+  let%expect_test "cases" =
+    run_it {| Some 1 |};
+    [%expect
+      {| (Ucase(case(Symbol Some))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7)))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 7)))))) |}]
+
+  let%expect_test "unit case" =
+    run_it {| None |};
+    [%expect
+      {| (Ucase(case(Symbol None))(value(Utuple(values())(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 5)))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 5)))))) |}]
+
+  let%expect_test "match" =
+    run_it
+      {| 
+        match v 
+          case Some x -> f x,
+          case None -> ()
+        end
+    |};
+    [%expect
+      {| (Umatch(value(Uvar(value(Symbol v))(span(Span(filename stdin)(start(Position(line 2)(column 14)))(finish(Position(line 2)(column 15)))))))(cases(((Symbol Some)((Symbol x))(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 3)(column 25)))(finish(Position(line 3)(column 26)))))))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 3)(column 27)))(finish(Position(line 3)(column 28)))))))(span(Span(filename stdin)(start(Position(line 3)(column 25)))(finish(Position(line 3)(column 28)))))))((Symbol None)()(Utuple(values())(span(Span(filename stdin)(start(Position(line 4)(column 23)))(finish(Position(line 4)(column 25)))))))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 5)(column 11)))))) |}]
 end

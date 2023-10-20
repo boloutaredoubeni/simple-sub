@@ -14,6 +14,7 @@ module Type = struct
       | Ty_vector of { read : t; write : t }
       | Ty_reference of { read : t; write : t }
       | Ty_record of { fields : (Symbol.t * t) list }
+      | Ty_cases of { cases : (Symbol.t * t) list }
       | Ty_recursive of { name : Symbol.t; body : t }
       | Ty_variable of { name : Symbol.t }
       | Ty_mutable of { read : t; write : t }
@@ -52,6 +53,13 @@ module Type = struct
           in
           let fields = String.concat ~sep:", " fields in
           "{" ^ fields ^ "}"
+      | Ty_cases { cases } ->
+          let cases =
+            List.map cases ~f:(fun (name, type') ->
+                "case " ^ Symbol.to_string name ^ " " ^ to_string type')
+          in
+          let cases = String.concat ~sep:" | " cases in
+          "[" ^ cases ^ "]"
       | Ty_recursive { name; body } ->
           to_string body ^ " as " ^ Symbol.to_string name
       | Ty_variable { name } -> "'" ^ Symbol.to_string name
@@ -136,14 +144,27 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Lrecord of {
+        proto : Symbol.t * Type.t;
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Lmatch of {
+        value : t;
+        cases : (Symbol.t * (Symbol.t * Type.t) * t) list;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
       }
     | Lselect of {
         value : t;
         field : Symbol.t;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
+      }
+    | Lcase of {
+        case : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
       }
     | Llet of {
         binding : Symbol.t * Type.t;
@@ -245,14 +266,27 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Lrecord of {
+        proto : Symbol.t * Type.t;
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Lmatch of {
+        value : t;
+        cases : (Symbol.t * (Symbol.t * Type.t) * t) list;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
       }
     | Lselect of {
         value : t;
         field : Symbol.t;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
+      }
+    | Lcase of {
+        case : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
       }
     | Llet of {
         binding : Symbol.t * Type.t;
@@ -303,6 +337,7 @@ end = struct
     | Lvector { type'; _ } -> type'
     | Ltuple_subscript { type'; _ } -> type'
     | Lsubscript { type'; _ } -> type'
+    | Lcase { case; value; _ } -> Ty_cases { cases = [ (case, type_of value) ] }
     | Lrecord { fields; _ } ->
         Ty_record { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
     | Llet { app; _ } -> type_of app
@@ -312,7 +347,7 @@ end = struct
     | Ldef { app; _ } -> type_of app
     | Lderef { type'; _ } -> type'
     | Lprimop { type'; _ } -> type'
-    | Lif { type'; _ } -> type'
+    | Lif { type'; _ } | Lmatch { type'; _ } -> type'
     | Lfor { type'; _ } -> type'
 
   module Spanned : Span.SPANNED = struct
@@ -337,11 +372,13 @@ end = struct
       | Lupdate_ref { span; _ }
       | Lrecord { span; _ }
       | Lselect { span; _ }
+      | Lcase { span; _ }
       | Llet { span; _ }
       | Lseq { span; _ }
       | Ldef { span; _ }
       | Lprimop { span; _ }
       | Lif { span; _ }
+      | Lmatch { span; _ }
       | Lfor { span; _ } ->
           span
   end

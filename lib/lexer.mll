@@ -20,6 +20,7 @@ let digit = ['0'-'9']
 let lower = ['a'-'z']
 let upper = ['A'-'Z']
 let ident = (lower|'_') (digit|lower|upper|'_'|'$')*
+let upper_ident = upper (digit|lower|upper|'_')*
 let number = digit+
 let decimal = number '.' number
 
@@ -43,6 +44,9 @@ rule token = parse
 | "to" { TO }
 | "downto" { DOWNTO }
 | "end" { END }
+| "with" { WITH }
+| "match" { MATCH }
+| "case" { CASE }
 | "=" { EQUAL }
 | "<-" { LEFT_ARROW }
 | "->" { RIGHT_ARROW }
@@ -81,6 +85,7 @@ rule token = parse
 | number { INT (Int.of_string (Lexing.lexeme lexbuf)) }
 | decimal { FLOAT (Float.of_string (Lexing.lexeme lexbuf)) }
 | ident { IDENT (Symbol.of_string (Lexing.lexeme lexbuf)) }
+| upper_ident { CASE_IDENT  (Symbol.of_string (Lexing.lexeme lexbuf)) }
 | _ { 
     let filename = (Lexing.lexeme_start_p lexbuf).pos_fname in
     let filename = if String.is_empty filename then "stdin" else filename in

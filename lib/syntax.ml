@@ -39,11 +39,12 @@ module Op = struct
 end
 
 (*
-   TODO: tags/pattern matching, mutual recursion, row polymorhism?, mutable records, type annotation, let tuple, let record, record punning
-   TODO: fiber and events, error propagation handling/overflow checks (errors must be matched or rethrown), fiber handlers,  typecasting,, slices, maps, sets, sequences, for comprehensions, early return, break, continue, string interpolation, string concatenation, multiline strings
-   TODO: more advanced type simplification, type monomorphization, pattern match compilation, multi arg functions
+   TODO: mutual recursion, mutable records, type annotation, let tuple, function patterns
+   TODO: concurrency, error propagation handling/overflow checks (errors must be matched or rethrown), slices, maps, sets, sequences, for comprehensions, early return, break, continue, string interpolation, string concatenation, multiline strings
+   TODO: more advanced type simplification, type monomorphization, pattern match compilation, multi arg functions, better parsing
    TODO: ownership based reference counting OR immix garbage collection
-   TODO: session types and protocols, threads, channels, tensors, subsumption checking for polymorphic annotations, trailing closures, quotes, metaprogramming
+   TODO: ANF, CPS, SSA, LLVM
+   TODO: session types and protocols, threads, channels, tensors, subsumption checking for polymorphic annotations, trailing closures, quotes, metaprogramming, row polymorhism?
    TODO: tree walk eval
 *)
 
@@ -85,6 +86,12 @@ type t =
   | Uchar of { value : char; span : (Span.span[@compare.ignore]) }
   | Ustring of { value : string; span : (Span.span[@compare.ignore]) }
   | Uvar of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
+  | Ucase of { case : Symbol.t; value : t; span : (Span.span[@compare.ignore]) }
+  | Umatch of {
+      value : t;
+      cases : (Symbol.t * Symbol.t option * t) list;
+      span : (Span.span[@compare.ignore]);
+    }
   | Uapp of { fn : t; value : t; span : (Span.span[@compare.ignore]) }
   | Uneg of { value : t; span : (Span.span[@compare.ignore]) }
   | Uop of {
@@ -133,6 +140,7 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Urecord of {
+      proto : Symbol.t option;
       fields : (Symbol.t * t) list;
       span : (Span.span[@compare.ignore]);
     }
@@ -209,6 +217,8 @@ module Spanned : Span.SPANNED = struct
     | Ufloat { span; _ }
     | Uvar { span; _ }
     | Uapp { span; _ }
+    | Ucase { span; _ }
+    | Umatch { span; _ }
     | Urecord { span; _ }
     | Utuple { span; _ }
     | Uvector { span; _ }

@@ -57,7 +57,8 @@ module rec Simple_type : sig
     | Sstring_type
     | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
-  [@@deriving compare, sexp]
+    | Scases of { cases : (Symbol.t * t) list }
+  [@@deriving compare, sexp, equal]
 
   val level : t -> Level.t
   val deref : t -> t
@@ -80,7 +81,8 @@ end = struct
     | Sstring_type
     | Svector_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
-  [@@deriving compare, sexp]
+    | Scases of { cases : (Symbol.t * t) list }
+  [@@deriving compare, sexp, equal]
 
   let rec level = function
     | Sfunction_type { argument; result } ->
@@ -98,7 +100,7 @@ end = struct
     | Svector_type { read; write; _ } | Sreference { read; write; _ } ->
         List.fold [ read; write ] ~init:Level.default ~f:(fun acc -> function
           | None -> acc | Some t -> Level.max acc (level t))
-    | Srecord { fields } ->
+    | Srecord { fields } | Scases { cases = fields } ->
         List.fold fields ~init:Level.default ~f:(fun acc (_, t) ->
             Level.max acc (level t))
     | Smutable { read; write; _ } -> Level.max (level read) (level write)
@@ -125,6 +127,12 @@ end = struct
           (String.concat ~sep:", "
              (List.map fields ~f:(fun (k, v) ->
                   Printf.sprintf "%s: %s" (Symbol.to_string k)
+                    (to_string ~visited v))))
+    | Scases { cases } ->
+        Printf.sprintf "[%s]"
+          (String.concat ~sep:"| "
+             (List.map cases ~f:(fun (k, v) ->
+                  Printf.sprintf "case %s %s" (Symbol.to_string k)
                     (to_string ~visited v))))
     | Sreference { read; write; scope } ->
         Printf.sprintf "ref[%s, %s] %s"
@@ -154,7 +162,7 @@ and Variable : sig
     mutable lower_bounds : Simple_type.t list;
     mutable upper_bounds : Simple_type.t list;
   }
-  [@@deriving compare, sexp]
+  [@@deriving compare, sexp, equal]
 
   val create : level:Level.t -> fresher:(module FRESH_SYM) -> Simple_type.t
   val name : t -> Symbol.t
@@ -451,8 +459,21 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Trecord of {
+        proto : Symbol.t * Simple_type.t;
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
+    | Tcase of {
+        case : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tmatch of {
+        value : t;
+        cases : (Symbol.t * (Symbol.t * Simple_type.t) * t) list;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
       }
     | Tselect of {
         value : t;
@@ -561,8 +582,21 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Trecord of {
+        proto : Symbol.t * Simple_type.t;
         fields : (Symbol.t * t) list;
         span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
+    | Tcase of {
+        case : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tmatch of {
+        value : t;
+        cases : (Symbol.t * (Symbol.t * Simple_type.t) * t) list;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
       }
     | Tselect of {
         value : t;
@@ -619,8 +653,8 @@ end = struct
     | Tvector { type'; _ } -> type'
     | Ttuple_subscript { type'; _ } | Tsubscript { type'; _ } -> type'
     | Tassign _ | Tassign_subscript _ | Tunit _ | Tupdate_ref _ -> Sunit_type
-    | Trecord { fields; _ } ->
-        Srecord { fields = List.map fields ~f:(fun (k, v) -> (k, type_of v)) }
+    | Tcase { case; value; _ } -> Scases { cases = [ (case, type_of value) ] }
+    | Trecord { type'; _ } -> type'
     | Tlambda { closure } -> Closure.type_of closure
     | Tlet { app; _ } -> type_of app
     | Tseq { second; _ } -> type_of second
@@ -628,6 +662,7 @@ end = struct
     | Tdef { app; _ } -> type_of app
     | Tprimop { type'; _ }
     | Tif { type'; _ }
+    | Tmatch { type'; _ }
     | Tderef { type'; _ }
     | Tfor { type'; _ } ->
         type'
@@ -653,6 +688,7 @@ end = struct
       | Tderef { span; _ }
       | Tupdate_ref { span; _ }
       | Trecord { span; _ }
+      | Tcase { span; _ }
       | Tselect { span; _ }
       | Tlet { span; _ }
       | Tseq { span; _ }
@@ -660,6 +696,7 @@ end = struct
       | Tdef { span; _ }
       | Tprimop { span; _ }
       | Tfor { span; _ }
+      | Tmatch { span; _ }
       | Tif { span; _ } ->
           span
   end

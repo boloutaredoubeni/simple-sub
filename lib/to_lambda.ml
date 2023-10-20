@@ -96,13 +96,29 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         | Some _ ->
             let type' = map_type self type' in
             Lderef { name; span; type' })
-    | Trecord { fields; span } ->
+    | Tcase { case; value; span } ->
+        Lcase { case; value = map_ast self value; span }
+    | Trecord { proto = proto, proto_type; fields; span; type' } ->
+        let proto_type = map_type self proto_type in
+        let type' = map_type self type' in
         let fields =
           List.map fields ~f:(fun (name, t) ->
               let t = map_ast self t in
               (name, t))
         in
-        Lrecord { fields; span }
+        Lrecord { proto = (proto, proto_type); fields; span; type' }
+    | Tmatch { value; cases; type'; span } ->
+        let value = map_ast self value in
+        let type' = map_type self type' in
+        let cases =
+          List.map cases ~f:(fun (tag, (name, type'), expr) ->
+              let type' = map_type self type' in
+              let expr =
+                map_ast (Type_env.add self ~key:name ~data:type') expr
+              in
+              (tag, (name, type'), expr))
+        in
+        Lmatch { value; cases; type'; span }
     | Tselect { value; field; span; type' } ->
         let value = map_ast self value in
         let type' = map_type self type' in
@@ -327,6 +343,13 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
                 (name, f t in_process))
           in
           Ty_record { fields }
+      | PolarType { type' = Scases { cases }; polar } ->
+          let cases =
+            List.map cases ~f:(fun (name, t) ->
+                let t = Polar.Type.create t polar in
+                (name, f t in_process))
+          in
+          Ty_cases { cases }
       | PolarType { type' = Svar_type { state }; polar } -> (
           let polar_var = Polar.Variable.create state polar in
           match
@@ -422,7 +445,7 @@ module Tests = struct
 
   let%expect_test "field access" =
     run_it {| { a=0, b=1}.a |};
-    [%expect {| '__0 | int |}]
+    [%expect {| '__2 | int |}]
 
   let%expect_test "type lambda" =
     run_it {| fn x -> 10 end |};
@@ -726,7 +749,7 @@ module Tests = struct
           { a = 0, b = '1' } in
         r.b
     |};
-    [%expect {| '__1 | int | char |}]
+    [%expect {| '__5 | int | char |}]
 
   let%expect_test "record fun" =
     run_it {|
@@ -750,7 +773,7 @@ module Tests = struct
       produce
     |};
     [%expect
-      {| '__3 | '__4 & int -> {head: '__4 | int, tail: '__5 | {head: '__4 | int, tail: '__12} as __12} |}]
+      {| '__5 | '__6 & int -> {head: '__6 | int, tail: '__7 | {head: '__6 | int, tail: '__15} as __15} |}]
 
   let%expect_test "cons list as record" =
     run_it
@@ -770,5 +793,44 @@ module Tests = struct
       let codata = produce 42 in
       consume codata
     |};
-    [%expect {| '__12 | int |}]
+    [%expect {| '__14 | int |}]
+
+  let%expect_test "nested function" =
+    run_it
+      {|
+      let f = 
+        let x = 0 in
+        fn y -> x + y end in
+      f
+    |};
+    [%expect {| '__1 & int -> int |}]
+
+  let%expect_test "curried function" =
+    run_it {|
+      let f x -> fn y -> x + y end in
+      f
+    |};
+    [%expect {| '__3 & int -> '__2 & int -> int |}]
+
+  let%expect_test "iife" =
+    run_it {| (fn x -> x end) 0   |};
+    [%expect {| '__0 | int |}]
+
+  let%expect_test "cases" =
+    run_it {| Some 1 |};
+    [%expect {| [case Some int] |}]
+
+  let%expect_test "unit case" =
+    run_it {| None |};
+    [%expect {| [case None ()] |}]
+
+  let%expect_test "disjoint match" =
+    run_it
+      {| 
+        match B
+          case A x -> x.foo,
+          case B -> false
+        end
+    |};
+    [%expect {|  '__0 | bool |}]
 end

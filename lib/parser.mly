@@ -6,6 +6,7 @@
 %token <Int.t> INT
 %token <Float.t> FLOAT
 %token <Text.Symbol.t> IDENT
+%token <Text.Symbol.t> CASE_IDENT
 %token <Char.t> CHAR
 %token <String.t> STRING
 %token LET 
@@ -14,7 +15,9 @@
 %token EQUAL 
 %token LEFT_ARROW RIGHT_ARROW
 %token IN
+%token WITH
 %token DEF FN
+%token MATCH CASE
 %token AS_MUT
 %token DOT DOT_DOT
 %token TO DOWNTO
@@ -54,7 +57,8 @@ simple_expr
     | name = IDENT LBRACKET index = expr RBRACKET EQUAL value = simple_expr { Uassign_subscript { name; index; value; span=Span.create $sloc } }
     | value = simple_expr DOT index = INT { Utuple_subscript { value; index; span=Span.create $sloc } }
     | value = simple_expr DOT field = IDENT { Uselect { value; field; span=Span.create $sloc } }
-    | LBRACE fields = record_fields RBRACE { Urecord { fields; span=Span.create $sloc } }
+    | LBRACE fields = record_fields RBRACE { Urecord { proto=None; fields; span=Span.create $sloc } }
+    | LBRACE proto = IDENT WITH fields = record_fields RBRACE { Urecord { proto=Some proto; fields; span=Span.create $sloc } }
     | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
     | mutability = mutability LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { mutability; values; span=Span.create $sloc } }
     | AS_MUT value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability=Readability.ReadWrite; value; span=Span.create $sloc } }
@@ -82,6 +86,9 @@ simple_expr
     | left = expr LESS_EQUAL right = expr { Uop { op=Op.Leq; left; right; span=Span.create $sloc } }
     | left = expr GREATER_EQUAL right = expr { Uop { op=Op.Geq; left; right; span=Span.create $sloc } }
     | left = expr NOT_EQUAL right = expr { Uop { op=Op.Neq; left; right; span=Span.create $sloc } }
+    | case = CASE_IDENT value = simple_expr { Ucase { case; value; span=Span.create $sloc } }
+    | case = CASE_IDENT { Ucase { case; value=Utuple { values=[]; span=Span.create $sloc }; span=Span.create $sloc } }
+    | fn = simple_expr value = expr  { Uapp{ fn; value; span=Span.create $sloc } }
 
 mutability
     : MUT { Mutability.Mutable }
@@ -90,8 +97,6 @@ mutability
 
 expr
     : value = simple_expr { value }
-    | fn = simple_expr value = expr  { Uapp{ fn; value; span=Span.create $sloc } }
-
     | FOR iterates = iterates DO body = expr END { 
         let rec to_iterates = function
             | [] -> Udone
@@ -142,12 +147,23 @@ expr
                 span = Span.create $sloc
             }      
         }
+    | MATCH value = simple_expr cases = cases END { Umatch { value; cases; span=Span.create $sloc } }
 
 record_fields
     : fields = separated_nonempty_list(COMMA, record_field) { fields }
 
 record_field
     : field = IDENT EQUAL value = simple_expr { (field, value) }
+    | field = IDENT { (field, Uvar { value=field; span=Span.create $sloc }) }
+
+
+cases
+    : cases = separated_nonempty_list(COMMA, case) { cases }
+
+case 
+    : CASE case = CASE_IDENT value = IDENT RIGHT_ARROW expr = expr { (case, Some value, expr) }
+    | CASE case = CASE_IDENT RIGHT_ARROW expr = expr { (case, None, expr) }
+
 
 elements
     : separated_list(COMMA, expr) { $1 }

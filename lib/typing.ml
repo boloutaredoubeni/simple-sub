@@ -4,6 +4,7 @@ open Tast
 
 exception Unbound_variable of { value : Symbol.t; span : Span.t }
 exception Missing_record_field of { value : Symbol.t }
+exception Missing_case of { value : Symbol.t }
 exception Missing_tuple_index of { value : int }
 exception Constrain_error of { lhs : Simple_type.t; rhs : Simple_type.t }
 
@@ -133,6 +134,9 @@ functor
                     {
                       fields = List.map fields ~f:(fun (f, t) -> (f, freshen t));
                     }
+              | Scases { cases } ->
+                  Scases
+                    { cases = List.map cases ~f:(fun (f, t) -> (f, freshen t)) }
               | Sint_type -> Sint_type
               | Sbool_type -> Sbool_type
               | Sfloat_type -> Sfloat_type
@@ -240,6 +244,13 @@ module Extrude = struct
             {
               fields =
                 List.map fields ~f:(fun (f, t) ->
+                    (f, extrude self (create_type t)));
+            }
+      | Scases { cases } ->
+          Scases
+            {
+              cases =
+                List.map cases ~f:(fun (f, t) ->
                     (f, extrude self (create_type t)));
             }
       | Svar_type { state } when c#contains state.name ->
@@ -399,6 +410,14 @@ module Constrain = struct
             | None, Some rhs ->
                 raise (Readability_error { value = rhs; rw = Write })
             | _ -> ())
+        | Scases { cases = lhs_cases }, Scases { cases = rhs_cases } ->
+            List.iter lhs_cases ~f:(fun (lhs_case, lhs_type) ->
+                match
+                  List.Assoc.find rhs_cases lhs_case ~equal:Symbol.equal
+                with
+                | Some rhs_type ->
+                    constrain (Constraint { lhs = rhs_type; rhs = lhs_type })
+                | None -> raise (Missing_case { value = lhs_case }))
         | Srecord { fields = lhs_fields }, Srecord { fields = rhs_fields } ->
             List.iter rhs_fields ~f:(fun (rhs_field, rhs_type) ->
                 match
@@ -859,13 +878,78 @@ functor
           Tassign_subscript { name; index; value; span }
       | Uassign_subscript { name; span; _ } ->
           raise (Unbound_variable { value = name; span })
-      | Urecord { fields; span } ->
-          Trecord
-            {
-              fields =
-                List.map fields ~f:(fun (field, e) -> (field, map_ast self e));
-              span;
-            }
+      | Ucase { case; value; span } ->
+          let value = map_ast self value in
+          Tcase { case; value; span }
+      | Umatch { value; cases; span } ->
+          let value = map_ast self value in
+          let type' = S.Fresh_var.f (Self.level self) in
+          let _, cases =
+            List.fold cases ~init:([], [])
+              ~f:(fun (found, pairs) (tag, name, expr) ->
+                let name =
+                  match name with Some name -> name | None -> S.Fresh_sym.f ()
+                in
+                if List.mem found tag ~equal:Symbol.equal then
+                  failwith "dupe tag"
+                else
+                  let ty = S.Fresh_var.f (Self.level self) in
+
+                  let scheme =
+                    TypeScheme.of_polymorphic_type
+                      (PolymorhicType.create (Self.level self) ty)
+                  in
+                  let rhs_value =
+                    map_ast
+                      (Self.add (Self.level_up self) ~key:name ~data:scheme)
+                      expr
+                  in
+                  let rhs = Tast.T.type_of rhs_value in
+                  constrain rhs type';
+                  (tag :: found, (tag, (name, ty), rhs_value) :: pairs))
+          in
+          let cases_types =
+            List.map cases ~f:(fun (tag, (_, ty), _) -> (tag, ty))
+          in
+          constrain (Tast.T.type_of value) (Scases { cases = cases_types });
+          Tmatch { value; cases; type'; span }
+      | Urecord { proto = None; fields; span } ->
+          let res = S.Fresh_var.f (Self.level self) in
+          let proto = S.Fresh_sym.f () in
+          let fields =
+            List.map fields ~f:(fun (field, e) -> (field, map_ast self e))
+          in
+          let field_types =
+            List.map fields ~f:(fun (field, e) -> (field, Tast.T.type_of e))
+          in
+          let type' = Srecord { fields = field_types } in
+          Trecord { proto = (proto, res); fields; span; type' }
+      | Urecord { proto = Some proto; fields; span }
+        when Self.contains self proto ->
+          let scheme = Self.find_exn self proto in
+          let proto_fields, res =
+            match TypeScheme.instantiate scheme (Self.level self) with
+            | Srecord { fields } as res -> (fields, res)
+            | actual ->
+                let expected = Srecord { fields = [] } in
+                raise (Type_error { expected; actual; span })
+          in
+          let fields =
+            List.map fields ~f:(fun (field, e) -> (field, map_ast self e))
+          in
+          let field_types =
+            List.map fields ~f:(fun (field, e) -> (field, Tast.T.type_of e))
+          in
+          let field_types =
+            List.merge
+              ~compare:(fun (incoming, _) (proto, _) ->
+                Symbol.compare incoming proto)
+              field_types proto_fields
+          in
+          let type' = Srecord { fields = field_types } in
+          Trecord { proto = (proto, res); fields; span; type' }
+      | Urecord { proto = Some proto; span; _ } ->
+          raise (Unbound_variable { value = proto; span })
       | Uselect { value; field; span } ->
           let value = map_ast self value in
           let res = S.Fresh_var.f (Self.level self) in
@@ -948,8 +1032,13 @@ functor
       | Ulet { binding; value; app; span; mutability = Mutability.Immutable } ->
           let value = map_ast (Self.level_up self) value in
           let level = Self.level self in
-          let type' = Tast.T.type_of value in
-          let scheme = TypeScheme.of_simple_type type' in
+          let scheme =
+            match Tast.T.type_of value with
+            | Sfunction_type _ as type' ->
+                TypeScheme.of_polymorphic_type
+                  (PolymorhicType.create level type')
+            | type' -> TypeScheme.of_simple_type type'
+          in
           let app = map_ast (Self.add self ~key:binding ~data:scheme) app in
           let type' = TypeScheme.instantiate scheme level in
           Tlet { binding = (binding, type'); value; app; span }
@@ -1090,6 +1179,13 @@ module Tests = struct
           (Printf.sprintf "Constrain error\n  lhs: %s\n  rhs: %s"
              (Simple_type.to_string ~visited:(Set.empty (module Symbol)) lhs)
              (Simple_type.to_string ~visited:(Set.empty (module Symbol)) rhs))
+    | exception Missing_case { value } ->
+        print_endline
+          (Printf.sprintf "Missing case\n  value: %s" (Symbol.to_string value))
+    | exception Missing_record_field { value } ->
+        print_endline
+          (Printf.sprintf "Missing record field\n  field: %s"
+             (Symbol.to_string value))
     | exception exn -> print_endline (Exn.to_string exn)
 
   let%expect_test "type empty file" =
@@ -1118,7 +1214,7 @@ module Tests = struct
 
   let%expect_test "field access" =
     run_it {| { a=0, b=1}.a |};
-    [%expect {| int <: '__0 |}]
+    [%expect {| int <: '__2 |}]
 
   let%expect_test "type lambda" =
     run_it {| fn x -> 10 end |};
@@ -1774,7 +1870,9 @@ module Tests = struct
           { a = 0, b = 1, c = 2 } in
         r.c
     |};
-    [%expect {| ("Fx__Typing.Missing_record_field(_)") |}]
+    [%expect {|
+      Missing record field
+        field: c |}]
 
   let%expect_test "record union" =
     run_it
@@ -1796,7 +1894,7 @@ module Tests = struct
           { a = 0, b = '1' } in
         r.b
     |};
-    [%expect {| int | char <: '__1 |}]
+    [%expect {| int | char <: '__5 |}]
 
   let%expect_test "record fun" =
     run_it {|
@@ -1809,13 +1907,9 @@ module Tests = struct
     run_it
       {|
       let f r -> r.a in
-      f { a = 0, b = 1 } + f { a = 0, b = '1' }
+      (f { a = 0, b = 1 }) + (f { a = 0, b = '1' })
    |};
-    [%expect
-      {|
-       Constrain error
-         lhs: {a: int, b: int}
-         rhs: int |}]
+    [%expect {| int |}]
 
   let%expect_test "cons list" =
     run_it
@@ -1824,7 +1918,7 @@ module Tests = struct
          produce
        |};
     [%expect
-      {| int <: '__4 <: int -> {head: int <: '__4 <: int, tail: {head: int <: '__4 <: int, tail: __5} <: '__5} <: '__3 <: int -> {head: int <: '__4 <: int, tail: __5} <: '__5 |}]
+      {| int <: '__6 <: int -> {head: int <: '__6 <: int, tail: {head: int <: '__6 <: int, tail: __7} <: '__7} <: '__5 <: int -> {head: int <: '__6 <: int, tail: __7} <: '__7 |}]
 
   let%expect_test "cons list as record" =
     run_it
@@ -1844,5 +1938,104 @@ module Tests = struct
       let codata = produce 42 in
       consume codata
     |};
-    [%expect {| int <: '__12 |}]
+    [%expect {| int <: '__14 |}]
+
+  let%expect_test "record extension" =
+    run_it
+      {|
+          let r = { a = 0, b = 1 } in
+          { r with c = 2 }
+    |};
+    [%expect {| {a: int, b: int, c: int} |}]
+
+  let%expect_test "record extend let mut" =
+    run_it
+      {|
+      let mut r = { a = 0, b = 1 } in
+      (r = { r with c = 2 });
+      r
+    |};
+    [%expect
+      {|
+        Type error
+          expected: {}
+          actual: mut[{a: int, b: int} <: '__2, {a: int, b: int} <: '__2] @ 0
+          span: stdin:3:11:3:27 |}]
+
+  let%expect_test "record extend let ref" =
+    run_it
+      {|
+      let ref r = { a = 0, b = 1 } in
+      let s = !r in
+      (r := { s with c = 2 });
+      !r
+    |};
+    [%expect
+      {|
+      Type error
+        expected: {}
+        actual: {a: int, b: int} <: '__2 <: '__3 @ 1
+        span: stdin:4:12:4:28 |}]
+
+  let%expect_test "nested function" =
+    run_it
+      {|
+      let f = 
+        let x = 0 in
+        fn y -> x + y end in
+      f
+    |};
+    [%expect {| '__1 <: int -> int |}]
+
+  let%expect_test "curried function" =
+    run_it {|
+      let f x -> fn y -> x + y end in
+      f
+    |};
+    [%expect {| '__3 <: int -> '__2 <: int -> int |}]
+
+  let%expect_test "iife" =
+    run_it {| (fn x -> x end) 0 |};
+    [%expect {| int <: '__0 |}]
+
+  let%expect_test "cases" =
+    run_it {| Some 1 |};
+    [%expect {| [case Some int] |}]
+
+  let%expect_test "unit case" =
+    run_it {| None |};
+    [%expect {| [case None ()] |}]
+
+  let%expect_test "can only match cases" =
+    run_it {| 
+        match 0 
+          case Ok x -> ()
+        end
+    |};
+    [%expect
+      {|
+         Constrain error
+           lhs: int
+           rhs: [case Ok '__1] |}]
+
+  let%expect_test "cases must be handled" =
+    run_it {| 
+        match B
+          case A x -> ()
+        end
+    |};
+    [%expect {|
+        Missing case
+          value: B
+         |}]
+
+  let%expect_test "disjoint match" =
+    run_it
+      {| 
+        match B
+          case A x -> x.foo,
+          case B -> false
+        end
+    |};
+    [%expect {|  bool <: '__0 |}]
 end
