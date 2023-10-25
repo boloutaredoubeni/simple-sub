@@ -11,7 +11,7 @@ module Type = struct
       | Ty_function of { argument : t; result : t }
       | Ty_unit
       | Ty_tuple of { first : t; second : t; rest : t list }
-      | Ty_vector of { read : t; write : t }
+      | Ty_list of { read : t; write : t }
       | Ty_reference of { read : t; write : t }
       | Ty_record of { fields : (Symbol.t * t) list }
       | Ty_cases of { cases : (Symbol.t * t) list }
@@ -40,8 +40,8 @@ module Type = struct
           let rest = String.concat ~sep:", " rest in
           let rest = if String.is_empty rest then rest else ", " ^ rest in
           "(" ^ to_string first ^ ", " ^ to_string second ^ rest ^ ")"
-      | Ty_vector { read; write } ->
-          "vector[" ^ to_string read ^ ", " ^ to_string write ^ "]"
+      | Ty_list { read; write } ->
+          "list[" ^ to_string read ^ ", " ^ to_string write ^ "]"
       | Ty_reference { read; write } ->
           let read = to_string read in
           let write = to_string write in
@@ -105,8 +105,15 @@ module rec T : sig
         span : (Span.span[@compare.ignore]);
       }
     | Lstring of { value : string; span : (Span.span[@compare.ignore]) }
-    | Lvector of {
+    | Llist of {
         values : t list;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Lslice of {
+        value : Symbol.t;
+        start : t option;
+        finish : t option;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
@@ -151,7 +158,7 @@ module rec T : sig
       }
     | Lmatch of {
         value : t;
-        cases : (Symbol.t * (Symbol.t * Type.t) * t) list;
+        cases : Alt.t;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
@@ -191,6 +198,11 @@ module rec T : sig
         iterate : Iterate.t;
         body : t;
         type' : Type.t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lresume of {
+        continuation : Symbol.t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
@@ -227,8 +239,15 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Lstring of { value : string; span : (Span.span[@compare.ignore]) }
-    | Lvector of {
+    | Llist of {
         values : t list;
+        span : (Span.span[@compare.ignore]);
+        type' : Type.t;
+      }
+    | Lslice of {
+        value : Symbol.t;
+        start : t option;
+        finish : t option;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
@@ -273,7 +292,7 @@ end = struct
       }
     | Lmatch of {
         value : t;
-        cases : (Symbol.t * (Symbol.t * Type.t) * t) list;
+        cases : Alt.t;
         span : (Span.span[@compare.ignore]);
         type' : Type.t;
       }
@@ -315,6 +334,11 @@ end = struct
         type' : Type.t;
         span : (Span.span[@compare.ignore]);
       }
+    | Lresume of {
+        continuation : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
   [@@deriving compare, sexp]
 
   let rec type_of =
@@ -334,7 +358,7 @@ end = struct
             rest = List.map rest ~f:(fun t -> type_of t);
           }
     | Lstring _ -> Ty_string
-    | Lvector { type'; _ } -> type'
+    | Llist { type'; _ } | Lslice { type'; _ } -> type'
     | Ltuple_subscript { type'; _ } -> type'
     | Lsubscript { type'; _ } -> type'
     | Lcase { case; value; _ } -> Ty_cases { cases = [ (case, type_of value) ] }
@@ -348,6 +372,7 @@ end = struct
     | Lderef { type'; _ } -> type'
     | Lprimop { type'; _ } -> type'
     | Lif { type'; _ } | Lmatch { type'; _ } -> type'
+    | Lresume _ -> Ty_void
     | Lfor { type'; _ } -> type'
 
   module Spanned : Span.SPANNED = struct
@@ -363,7 +388,8 @@ end = struct
       | Lapp { span; _ }
       | Ltuple { span; _ }
       | Lstring { span; _ }
-      | Lvector { span; _ }
+      | Llist { span; _ }
+      | Lslice { span; _ }
       | Ltuple_subscript { span; _ }
       | Lsubscript { span; _ }
       | Lassign { span; _ }
@@ -379,6 +405,7 @@ end = struct
       | Lprimop { span; _ }
       | Lif { span; _ }
       | Lmatch { span; _ }
+      | Lresume { span; _ }
       | Lfor { span; _ } ->
           span
   end
@@ -394,6 +421,11 @@ and Closure : sig
     | Lrec_closure of {
         self : Symbol.t;
         parameter : Symbol.t * Type.t;
+        value : T.t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lsuspend of {
+        continuation : Symbol.t * Type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
@@ -413,9 +445,15 @@ end = struct
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
+    | Lsuspend of {
+        continuation : Symbol.t * Type.t;
+        value : T.t;
+        span : (Span.span[@compare.ignore]);
+      }
   [@@deriving compare, sexp]
 
   let type_of = function
+    | Lsuspend { continuation = _, type'; _ } -> type'
     | Lclosure { parameter = _, type'; value; _ }
     | Lrec_closure { parameter = _, type'; value; _ } ->
         Type.Ty_function { argument = type'; result = T.type_of value }
@@ -424,7 +462,9 @@ end = struct
     type nonrec t = t [@@deriving compare, sexp]
 
     let span = function
-      | Lclosure { span; _ } | Lrec_closure { span; _ } -> span
+      | Lclosure { span; _ } | Lrec_closure { span; _ } | Lsuspend { span; _ }
+        ->
+          span
   end
 end
 
@@ -455,7 +495,7 @@ and Primop : sig
     | Lbool_eq
     | Lbool_neq
     | Lstr_concat
-    | Lvector_concat
+    | Llist_concat
   [@@deriving compare, sexp]
 end = struct
   type t =
@@ -484,7 +524,7 @@ end = struct
     | Lbool_eq
     | Lbool_neq
     | Lstr_concat
-    | Lvector_concat
+    | Llist_concat
   [@@deriving compare, sexp]
 end
 
@@ -511,6 +551,46 @@ end = struct
         span : (Span.span[@compare.ignore]);
       }
     | Ldone
+  [@@deriving compare, sexp]
+end
+
+and Alt : sig
+  type t =
+    | Lalt of {
+        tag : Symbol.t;
+        name : Symbol.t * Type.t;
+        expr : T.t;
+        span : (Span.span[@compare.ignore]);
+        rest : t;
+      }
+    | Lresumption of {
+        tag : Symbol.t;
+        name : Symbol.t * Type.t;
+        continuation : Symbol.t * Type.t;
+        expr : T.t;
+        rest : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lno_match
+  [@@deriving compare, sexp]
+end = struct
+  type t =
+    | Lalt of {
+        tag : Symbol.t;
+        name : Symbol.t * Type.t;
+        expr : T.t;
+        span : (Span.span[@compare.ignore]);
+        rest : t;
+      }
+    | Lresumption of {
+        tag : Symbol.t;
+        name : Symbol.t * Type.t;
+        continuation : Symbol.t * Type.t;
+        expr : T.t;
+        rest : t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Lno_match
   [@@deriving compare, sexp]
 end
 

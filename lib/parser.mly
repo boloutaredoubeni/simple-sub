@@ -13,10 +13,12 @@
 %token MUT REF
 %token COLON_EQUAL BANG
 %token EQUAL 
-%token LEFT_ARROW RIGHT_ARROW
+%token LEFT_ARROW RIGHT_ARROW WIDE_ARROW
 %token IN
 %token WITH
 %token DEF FN
+%token SUSPEND
+%token RESUME
 %token MATCH CASE
 %token AS_MUT
 %token DOT DOT_DOT
@@ -60,10 +62,10 @@ simple_expr
     | LBRACE fields = record_fields RBRACE { Urecord { proto=None; fields; span=Span.create $sloc } }
     | LBRACE proto = IDENT WITH fields = record_fields RBRACE { Urecord { proto=Some proto; fields; span=Span.create $sloc } }
     | LPAREN values = elements RPAREN { Utuple { values; span=Span.create $sloc } }
-    | mutability = mutability LBRACKET_BAR values = elements RBRACKET_BAR { Uvector { mutability; values; span=Span.create $sloc } }
-    | AS_MUT value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability=Readability.ReadWrite; value; span=Span.create $sloc } }
+    | mutability = mutability LBRACKET_BAR values = elements RBRACKET_BAR { Ulist { mutability; values; span=Span.create $sloc } }
+    | AS_MUT value = IDENT LBRACKET start = simple_expr? DOT_DOT finish = simple_expr? RBRACKET { Uslice { readability=Readability.ReadWrite; value; span=Span.create $sloc; start; finish } }
     | AS_MUT value = IDENT { Umutable_ref { value; span=Span.create $sloc }}
-    | value = IDENT LBRACKET DOT_DOT RBRACKET { Uslice { readability=Readability.Readonly; value; span=Span.create $sloc } }
+    | value = IDENT LBRACKET start = simple_expr? DOT_DOT finish = simple_expr? RBRACKET { Uslice { readability=Readability.Readonly; value; span=Span.create $sloc; start; finish } }
     | name = IDENT COLON_EQUAL value = simple_expr { Uupdate_ref { name; value; span=Span.create $sloc } }
     | BANG name = IDENT { Uderef { name; span=Span.create $sloc } }
     | MINUS value = expr {
@@ -125,29 +127,94 @@ expr
             closure = Uclosure  { 
                     parameter; 
                     value; 
-                    span = Span.create ($startpos(name), $startpos(value)) 
+                    span = Span.create ($startpos(parameter), $startpos(value))   
                 }; 
                 app;
                 span = Span.create $sloc  
             }
         }
+
+    | LET name = IDENT parameter = IDENT continuation = IDENT WIDE_ARROW value = expr IN app = expr { 
+        Ulet_fun { 
+            name; 
+            closure = Uclosure  { 
+                    parameter; 
+                    value = Ulambda {
+                        
+                        closure = Ususpend {
+                            continuation;
+                            body = value;
+                            span = Span.create ($startpos(name), $startpos(value))
+                        };
+                    };
+                    span = Span.create ($startpos(parameter), $startpos(value))
+                    }; 
+                app;
+                span = Span.create $sloc  
+            }
+    }
+
     | FN parameter = IDENT RIGHT_ARROW value = expr END { 
         let lambda = Uclosure { parameter;  value; span=Span.create $sloc } in 
         Ulambda { closure=lambda }
     }
+
+    | FN parameter = IDENT continuation = IDENT WIDE_ARROW body = expr END { 
+        let lambda = Ususpend { continuation;  body; span=Span.create $sloc } in 
+        Ulambda { closure=Uclosure { parameter; value=Ulambda { closure=lambda }; span=Span.create $sloc
+         } }
+    }
+
     | DEF name = IDENT parameter = IDENT EQUAL value = expr IN app = expr { 
         Udef { 
             name; 
             closure = Uclosure  { 
                     parameter; 
                     value; 
-                    span = Span.create ($startpos(name), $startpos(value)) 
+                    span = Span.create ($startpos(parameter), $startpos(value))  
                 }; 
                 app;
                 span = Span.create $sloc
             }      
         }
-    | MATCH value = simple_expr cases = cases END { Umatch { value; cases; span=Span.create $sloc } }
+
+    | DEF name = IDENT parameter = IDENT continuation= IDENT WIDE_ARROW value = expr IN app = expr { 
+        Udef { 
+            name; 
+            closure = Uclosure  { 
+                    parameter; 
+                    value = 
+                    Ulambda {
+                        closure =
+                    Ususpend {
+                        continuation;
+                        body = value;
+                        span = Span.create ($startpos(name), $startpos(value))
+                    };
+                    };
+                    span = Span.create ($startpos(parameter), $startpos(value))
+                };
+                app;
+                span = Span.create $sloc
+            }      
+        }
+
+    | MATCH value = simple_expr cases = cases END { 
+        let rec to_cases = function
+            | [] -> Uno_match
+            | (tag, name, expr, span) :: cases -> 
+                Ualt { tag; name; expr; rest = to_cases cases; span }
+             in
+        let cases = to_cases cases in
+        Umatch { value; cases; span=Span.create $sloc } }
+
+    | RESUME continuation= IDENT value = simple_expr { Uresume { continuation; value; span=Span.create $sloc } }
+    | SUSPEND continuation = IDENT WIDE_ARROW body = expr END {     
+        let lambda = Ususpend { continuation; body; span=Span.create $sloc } in
+        Ulambda { closure=lambda }
+    }
+
+
 
 record_fields
     : fields = separated_nonempty_list(COMMA, record_field) { fields }
@@ -161,8 +228,8 @@ cases
     : cases = separated_nonempty_list(COMMA, case) { cases }
 
 case 
-    : CASE case = CASE_IDENT value = IDENT RIGHT_ARROW expr = expr { (case, Some value, expr) }
-    | CASE case = CASE_IDENT RIGHT_ARROW expr = expr { (case, None, expr) }
+    : CASE case = CASE_IDENT value = IDENT RIGHT_ARROW expr = expr { (case, Some value, expr, Span.create $sloc) }
+    | CASE case = CASE_IDENT RIGHT_ARROW expr = expr { (case, None, expr, Span.create $sloc) }
 
 
 elements

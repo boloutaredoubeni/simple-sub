@@ -14,6 +14,7 @@ module type MAPPER = sig
   val map_type : self -> Tast.Simple_type.t -> Lambda.Type.t
   val map_primop : self -> Tast.Primop.t -> Lambda.Primop.t
   val map_iterate : self -> Tast.Iterate.t -> self * Lambda.Iterate.t
+  val map_cases : self -> Tast.Alt.t -> Lambda.Alt.t
 end
 
 module Type_env = struct
@@ -49,10 +50,15 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tchar { value; span } -> Lchar { value; span }
     | Tunit { span } -> Lunit { span }
     | Tstring { value; span } -> Lstring { value; span }
-    | Tvector { values; span; type' } ->
+    | Tlist { values; span; type' } ->
         let values = List.map values ~f:(map_ast self) in
         let type' = map_type self type' in
-        Lvector { values; span; type' }
+        Llist { values; span; type' }
+    | Tslice { name; start; finish; span; type' } ->
+        let start = Option.map start ~f:(map_ast self) in
+        let finish = Option.map finish ~f:(map_ast self) in
+        let type' = map_type self type' in
+        Lslice { value = name; start; finish; span; type' }
     | Ttuple { first; second; rest; span } ->
         let first = map_ast self first in
         let second = map_ast self second in
@@ -110,21 +116,17 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tmatch { value; cases; type'; span } ->
         let value = map_ast self value in
         let type' = map_type self type' in
-        let cases =
-          List.map cases ~f:(fun (tag, (name, type'), expr) ->
-              let type' = map_type self type' in
-              let expr =
-                map_ast (Type_env.add self ~key:name ~data:type') expr
-              in
-              (tag, (name, type'), expr))
-        in
+        let cases = map_cases self cases in
         Lmatch { value; cases; type'; span }
     | Tselect { value; field; span; type' } ->
         let value = map_ast self value in
         let type' = map_type self type' in
         Lselect { value; field; span; type' }
     | Tlambda { closure } ->
-        let (Tclosure { span; _ }) = closure in
+        let span =
+          match closure with
+          | Tclosure { span; _ } | Tsuspend { span; _ } -> span
+        in
         let closure = map_closure ~is_rec:None self closure in
         let name = Fresh_sym.f () in
         let type' = Closure.type_of closure in
@@ -173,6 +175,13 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
         let body = map_ast self body in
         let type' = map_type self type' in
         Lfor { iterate; body; span; type' }
+    | Tresume { continuation; value; span } -> (
+        match Type_env.find self continuation with
+        | Some (Ty_function { result = Ty_void; _ }) ->
+            let value = map_ast self value in
+            Lresume { continuation; value; span }
+        | Some _ -> failwith "continuation must be void"
+        | None -> failwith "unbound var")
 
   and map_iterate self iterate =
     let rec loop self iter =
@@ -191,21 +200,46 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     in
     loop self iterate
 
-  and map_closure ~is_rec self
-      (Tclosure { parameter = value, type'; value = closure_body; span }) =
-    match is_rec with
-    | None ->
+  and map_closure ~is_rec self = function
+    | Tclosure { parameter = value, type'; value = closure_body; span } -> (
+        match is_rec with
+        | None ->
+            let type' = map_type self type' in
+            let self = Type_env.add self ~key:value ~data:type' in
+            let closure_body = map_ast self closure_body in
+            let parameter = (value, type') in
+            Lclosure { parameter; value = closure_body; span }
+        | Some fix ->
+            let type' = map_type self type' in
+            let self = Type_env.add self ~key:value ~data:type' in
+            let closure_body = map_ast self closure_body in
+            let parameter = (value, type') in
+            Lrec_closure { self = fix; parameter; value = closure_body; span })
+    | Tsuspend { continuation = continuation, type'; value; span } ->
         let type' = map_type self type' in
-        let self = Type_env.add self ~key:value ~data:type' in
-        let closure_body = map_ast self closure_body in
-        let parameter = (value, type') in
-        Lclosure { parameter; value = closure_body; span }
-    | Some fix ->
-        let type' = map_type self type' in
-        let self = Type_env.add self ~key:value ~data:type' in
-        let closure_body = map_ast self closure_body in
-        let parameter = (value, type') in
-        Lrec_closure { self = fix; parameter; value = closure_body; span }
+        let self =
+          Type_env.add self ~key:continuation
+            ~data:(Ty_function { argument = type'; result = Ty_void })
+        in
+        let value = map_ast self value in
+        let continuation = (continuation, type') in
+        Lsuspend { continuation; value; span }
+
+  and map_cases self cases =
+    let rec loop self cases =
+      let open Tast.Alt in
+      let open Lambda.Alt in
+      match cases with
+      | Tno_match -> Lno_match
+      | Talt { tag; name = name, ty; expr; span; rest } ->
+          let ty = map_type self ty in
+          let rest = loop self rest in
+          let self = Type_env.add self ~key:name ~data:ty in
+          let expr = map_ast self expr in
+
+          Lalt { tag; name = (name, ty); expr; span; rest }
+    in
+    loop self cases
 
   and map_primop _self =
     let open Tast.Primop in
@@ -236,7 +270,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
     | Tbool_eq -> Lbool_eq
     | Tbool_ne -> Lbool_neq
     | Tstr_concat -> Lstr_concat
-    | Tvector_concat -> Lvector_concat
+    | Tlist_concat -> Llist_concat
 
   and map_type _self t =
     let open Tast in
@@ -254,6 +288,8 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
       | PolarType { type' = Sfloat_type; _ } -> Ty_float
       | PolarType { type' = Sunit_type; _ } -> Ty_unit
       | PolarType { type' = Schar_type; _ } -> Ty_char
+      | PolarType { type' = Scontinuation _; _ } ->
+          failwith "continuation not supported"
       | PolarType { type' = Sfunction_type { argument; result }; polar } ->
           let argument = Polar.Type.create argument (Polar.not polar) in
           let result = Polar.Type.create result polar in
@@ -282,29 +318,27 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
       | PolarType { type' = Sstring_type; _ } -> Ty_string
       | PolarType
           {
-            type' = Svector_type { read = Some read; write = Some write; _ };
+            type' = Slist_type { read = Some read; write = Some write; _ };
             polar;
           } ->
           let read = Polar.Type.create read polar in
           let write = Polar.Type.create write (Polar.not polar) in
           let read = f read in_process in
           let write = f write in_process in
-          Ty_vector { read; write }
-      | PolarType { type' = Svector_type { read = None; write = None; _ }; _ }
-        ->
-          Ty_vector { read = Ty_void; write = Ty_void }
+          Ty_list { read; write }
+      | PolarType { type' = Slist_type { read = None; write = None; _ }; _ } ->
+          Ty_list { read = Ty_void; write = Ty_void }
       | PolarType
-          { type' = Svector_type { read = Some read; write = None; _ }; polar }
-        ->
-          Ty_vector
+          { type' = Slist_type { read = Some read; write = None; _ }; polar } ->
+          Ty_list
             {
               read = f (Polar.Type.create read polar) in_process;
               write = Ty_void;
             }
       | PolarType
-          { type' = Svector_type { read = None; write = Some write; _ }; polar }
+          { type' = Slist_type { read = None; write = Some write; _ }; polar }
         ->
-          Ty_vector
+          Ty_list
             {
               write = f (Polar.Type.create write (Polar.not polar)) in_process;
               read = Ty_void;
@@ -320,7 +354,7 @@ module Make (Fresh_sym : FRESH_SYM) : MAPPER = struct
           let write = f write in_process in
           Ty_reference { read; write }
       | PolarType { type' = Sreference { read = None; write = None; _ }; _ } ->
-          failwith "vector type not supported yet"
+          failwith "list type not supported yet"
       | PolarType
           { type' = Sreference { read = Some read; write = None; _ }; polar } ->
           Ty_reference
@@ -519,33 +553,33 @@ module Tests = struct
     run_it "(1, 2, true).2";
     [%expect {| '__0 | bool |}]
 
-  let%expect_test "empty vector" =
+  let%expect_test "empty list" =
     run_it "[||]";
-    [%expect {| vector['__0, void] |}]
+    [%expect {| list['__0, void] |}]
 
-  let%expect_test "vector" =
+  let%expect_test "list" =
     run_it "[| 1, 2 |]";
-    [%expect {| vector['__0 | int | int, void] |}]
+    [%expect {| list['__0 | int | int, void] |}]
 
-  let%expect_test "union vector" =
+  let%expect_test "union list" =
     run_it "[| 1, true |]";
-    [%expect {| vector['__0 | bool | int, void] |}]
+    [%expect {| list['__0 | bool | int, void] |}]
 
-  let%expect_test "vector subscript" =
+  let%expect_test "list subscript" =
     run_it {| let xs = [| 1, 2 |] in xs[0] |};
     [%expect {| '__1 | int |}]
 
-  let%expect_test "union vector subscript" =
+  let%expect_test "union list subscript" =
     run_it {| let xs = [| 1, true |] in xs[0] |};
     [%expect {| '__1 | int | bool |}]
 
-  let%expect_test "local readwrite vector" =
+  let%expect_test "local readwrite list" =
     run_it {|
        let xs = mut [| 0, 1|] in
        xs[0] = 1 |};
     [%expect {| () |}]
 
-  let%expect_test "readwrite vector, capture readonly" =
+  let%expect_test "readwrite list, capture readonly" =
     run_it
       {|
        let xs = mut [| 0, 1|] in
@@ -554,7 +588,7 @@ module Tests = struct
        f 1|};
     [%expect {| ("Fx__Typing.Type_error(_, _, _)") |}]
 
-  let%expect_test "readwrite vector, capture readwrite" =
+  let%expect_test "readwrite list, capture readwrite" =
     run_it
       {|
        let xs = ref [| 0, 1|] in
@@ -563,19 +597,19 @@ module Tests = struct
        f 1|};
     [%expect {| '__3 | () |}]
 
-  let%expect_test "reference vectors can be readonly" =
+  let%expect_test "reference lists can be readonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
       xs[..] |};
-    [%expect {| vector['__1 | int | int, void] |}]
+    [%expect {| list['__1 | int | int, void] |}]
 
-  let%expect_test "reference vectors can be writeonly" =
+  let%expect_test "reference lists can be writeonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
       &mut xs[..] |};
-    [%expect {| vector['__1 | int | int, '__0] |}]
+    [%expect {| list['__1 | int | int, '__0] |}]
 
-  let%expect_test "readonly vectors can be read" =
+  let%expect_test "readonly lists can be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -833,4 +867,107 @@ module Tests = struct
         end
     |};
     [%expect {|  '__0 | bool |}]
+
+  let%expect_test "suspend block" =
+    run_it {|
+        suspend k =>() end
+    |};
+    [%expect {| '__0 |}]
+
+  let%expect_test "suspend function" =
+    run_it {|
+      let f x k => () in
+      f
+    |};
+    [%expect {| '__3 -> '__2 |}]
+
+  let%expect_test "suspend rec" =
+    run_it {|
+      def f x k => () in
+      f
+    |};
+    [%expect {| '__3 | '__5 -> '__4 |}]
+
+  let%expect_test "suspend lambda" =
+    run_it {|
+      fn x k => () end
+    |};
+    [%expect {| '__0 -> '__1 |}]
+
+  let%expect_test "resume in suspension" =
+    run_it {| suspend k => resume k 1 end|};
+    [%expect {| '__0 | int |}]
+
+  let%expect_test "resume by if" =
+    run_it {| suspend k => if true then resume k 1 end end|};
+    [%expect {| '__0 | int |}]
+
+  let%expect_test "resume by match" =
+    run_it
+      {| 
+      suspend k => 
+        match Some 0
+          case Some v -> resume k 0,
+          case None -> ()
+        end
+      end
+    |};
+    [%expect {| '__0 | int |}]
+
+  let%expect_test "non tail resumption" =
+    run_it
+      {|
+      suspend k => 
+        let x = resume k 1 in
+        x
+      end
+    |};
+    [%expect {| '__0 | int |}]
+
+  let%expect_test "multiple resumptions" =
+    run_it
+      {|
+      suspend k => 
+        (resume k 1);
+        resume k 2
+      end
+    |};
+    [%expect {| '__0 | int | int |}]
+
+  let%expect_test "suspended function" =
+    run_it {|
+      let f x k => resume k 1 in
+      f
+    |};
+    [%expect {| '__3 -> '__2 | int |}]
+
+  let%expect_test "suspended rec" =
+    run_it {|
+      def f x k => resume k 1 in
+      f
+    |};
+    [%expect {| '__3 | '__5 -> '__4 | int |}]
+
+  let%expect_test "suspended lambda" =
+    run_it {|
+      fn x k => resume k 1 end
+    |};
+    [%expect {| '__0 -> '__1 | int |}]
+
+  let%expect_test "recursively applied function" =
+    run_it
+      {|
+      def f x k => 
+        match x 
+          case Continue st -> 
+            if st == 0 then
+              f (Break st)
+            else 
+              f (Continue (st - 1)),
+          case Break st -> resume k st
+        end
+      in f
+    |};
+    [%expect
+      {| '__14 | '__19 & [case Break '__23 & '__22 & '__20 & '__38 as __38 & int -> '__21 & int & int & '__15 & '__18 & '__17 & '__16 & '__17 | case Continue '__22 & '__20 & '__38 as __38 & int -> '__21 & int & int] -> '__15 |}]
 end

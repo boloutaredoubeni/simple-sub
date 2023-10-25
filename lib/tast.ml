@@ -55,10 +55,13 @@ module rec Simple_type : sig
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
     | Sstring_type
-    | Svector_type of { read : t option; write : t option; scope : Scope.t }
+    | Slist_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
-    | Scases of { cases : (Symbol.t * t) list }
+    | Scases of { cases : case list }
+    | Scontinuation of { argument : t; scope : Scope.t }
   [@@deriving compare, sexp, equal]
+
+  and case = Symbol.t * t [@@deriving compare, sexp, equal]
 
   val level : t -> Level.t
   val deref : t -> t
@@ -79,12 +82,16 @@ end = struct
     | Ssparse_tuple of { indices : (int * t) list }
     | Stuple_type of { first : t; second : t; rest : t list }
     | Sstring_type
-    | Svector_type of { read : t option; write : t option; scope : Scope.t }
+    | Slist_type of { read : t option; write : t option; scope : Scope.t }
     | Srecord of { fields : (Symbol.t * t) list }
-    | Scases of { cases : (Symbol.t * t) list }
+    | Scases of { cases : case list }
+    | Scontinuation of { argument : t; scope : Scope.t }
   [@@deriving compare, sexp, equal]
 
+  and case = Symbol.t * t [@@deriving compare, sexp, equal]
+
   let rec level = function
+    | Scontinuation { argument; _ } -> level argument
     | Sfunction_type { argument; result } ->
         Level.max (level argument) (level result)
     | Svar_type { state } -> state.level
@@ -97,7 +104,7 @@ end = struct
         List.fold (first :: second :: rest) ~init:Level.default ~f:(fun acc t ->
             Level.max acc (level t))
     | Sstring_type -> Level.default
-    | Svector_type { read; write; _ } | Sreference { read; write; _ } ->
+    | Slist_type { read; write; _ } | Sreference { read; write; _ } ->
         List.fold [ read; write ] ~init:Level.default ~f:(fun acc -> function
           | None -> acc | Some t -> Level.max acc (level t))
     | Srecord { fields } | Scases { cases = fields } ->
@@ -109,6 +116,10 @@ end = struct
 
   let rec to_string ~visited = function
     | Svar_type { state } -> Variable.to_string ~visited state
+    | Scontinuation { argument; scope } ->
+        Printf.sprintf "(%s -> !) %s"
+          (to_string ~visited argument)
+          (Scope.to_string scope)
     | Sint_type -> "int"
     | Sfloat_type -> "float"
     | Sbool_type -> "bool"
@@ -148,8 +159,8 @@ end = struct
           (String.concat ~sep:", "
              (List.map indices ~f:(fun (i, t) ->
                   Printf.sprintf "%d: %s" i (to_string ~visited t))))
-    | Svector_type { read; write; scope } ->
-        Printf.sprintf "vector[%s, %s] %s"
+    | Slist_type { read; write; scope } ->
+        Printf.sprintf "list[%s, %s] %s"
           (Option.value_map read ~default:"_" ~f:(to_string ~visited))
           (Option.value_map write ~default:"_" ~f:(to_string ~visited))
           (Scope.to_string scope)
@@ -293,71 +304,6 @@ module Polar = struct
   end
 end
 
-module Type = struct
-  module T = struct
-    type t =
-      | Ty_any
-      | Ty_void
-      | Ty_union of { lhs : t; rhs : t }
-      | Ty_intersection of { lhs : t; rhs : t }
-      | Ty_function of { argument : t; result : t }
-      | Ty_unit
-      | Ty_tuple of { first : t; second : t; rest : t list }
-      | Ty_vector of { read : t; write : t }
-      | Ty_reference of { read : t; write : t }
-      | Ty_record of { fields : (Symbol.t * t) list }
-      | Ty_recursive of { name : Symbol.t; body : t }
-      | Ty_variable of { name : Symbol.t }
-      | Ty_mutable of { read : t; write : t }
-      | Ty_int
-      | Ty_float
-      | Ty_bool
-      | Ty_char
-      | Ty_string
-    [@@deriving compare, sexp, equal]
-
-    let rec to_string = function
-      | Ty_any -> "any"
-      | Ty_void -> "void"
-      | Ty_mutable { read; write } ->
-          "mut[" ^ to_string read ^ ", " ^ to_string write ^ "]"
-      | Ty_union { lhs; rhs } -> to_string lhs ^ " | " ^ to_string rhs
-      | Ty_intersection { lhs; rhs } -> to_string lhs ^ " + " ^ to_string rhs
-      | Ty_function { argument; result } ->
-          to_string argument ^ " -> " ^ to_string result
-      | Ty_unit -> "()"
-      | Ty_tuple { first; second; rest } ->
-          let rest = List.map rest ~f:to_string in
-          let rest = String.concat ~sep:", " rest in
-          let rest = if String.is_empty rest then rest else ", " ^ rest in
-          "(" ^ to_string first ^ ", " ^ to_string second ^ rest ^ ")"
-      | Ty_vector { read; write } ->
-          "vector[" ^ to_string read ^ ", " ^ to_string write ^ "]"
-      | Ty_reference { read; write } ->
-          let read = to_string read in
-          let write = to_string write in
-          "ref[" ^ read ^ ", " ^ write ^ "]"
-      | Ty_record { fields } ->
-          let fields =
-            List.map fields ~f:(fun (name, type') ->
-                Symbol.to_string name ^ ": " ^ to_string type')
-          in
-          let fields = String.concat ~sep:", " fields in
-          "{" ^ fields ^ "}"
-      | Ty_recursive { name; body } ->
-          to_string body ^ " as " ^ Symbol.to_string name
-      | Ty_variable { name } -> "'" ^ Symbol.to_string name
-      | Ty_float -> "float"
-      | Ty_int -> "int"
-      | Ty_bool -> "bool"
-      | Ty_char -> "char"
-      | Ty_string -> "string"
-  end
-
-  include T
-  include Comparable.Make (T)
-end
-
 module Primop = struct
   type t =
     | Tint_add
@@ -385,7 +331,7 @@ module Primop = struct
     | Tbool_eq
     | Tbool_ne
     | Tstr_concat
-    | Tvector_concat
+    | Tlist_concat
   [@@deriving sexp, compare]
 end
 
@@ -420,8 +366,15 @@ module rec T : sig
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
-    | Tvector of {
+    | Tlist of {
         values : t list;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
+    | Tslice of {
+        name : Symbol.t;
+        start : t option;
+        finish : t option;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
       }
@@ -471,7 +424,7 @@ module rec T : sig
       }
     | Tmatch of {
         value : t;
-        cases : (Symbol.t * (Symbol.t * Simple_type.t) * t) list;
+        cases : Alt.t;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
       }
@@ -507,6 +460,11 @@ module rec T : sig
         iterate : Iterate.t;
         body : t;
         type' : Simple_type.t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tresume of {
+        continuation : Symbol.t;
+        value : t;
         span : (Span.span[@compare.ignore]);
       }
   [@@deriving compare, sexp]
@@ -543,8 +501,15 @@ end = struct
         rest : t list;
         span : (Span.span[@compare.ignore]);
       }
-    | Tvector of {
+    | Tlist of {
         values : t list;
+        span : (Span.span[@compare.ignore]);
+        type' : Simple_type.t;
+      }
+    | Tslice of {
+        name : Symbol.t;
+        start : t option;
+        finish : t option;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
       }
@@ -594,7 +559,7 @@ end = struct
       }
     | Tmatch of {
         value : t;
-        cases : (Symbol.t * (Symbol.t * Simple_type.t) * t) list;
+        cases : Alt.t;
         span : (Span.span[@compare.ignore]);
         type' : Simple_type.t;
       }
@@ -632,6 +597,11 @@ end = struct
         type' : Simple_type.t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tresume of {
+        continuation : Symbol.t;
+        value : t;
+        span : (Span.span[@compare.ignore]);
+      }
   [@@deriving compare, sexp]
 
   let rec type_of =
@@ -650,7 +620,7 @@ end = struct
             second = type_of second;
             rest = List.map rest ~f:type_of;
           }
-    | Tvector { type'; _ } -> type'
+    | Tlist { type'; _ } | Tslice { type'; _ } -> type'
     | Ttuple_subscript { type'; _ } | Tsubscript { type'; _ } -> type'
     | Tassign _ | Tassign_subscript _ | Tunit _ | Tupdate_ref _ -> Sunit_type
     | Tcase { case; value; _ } -> Scases { cases = [ (case, type_of value) ] }
@@ -666,6 +636,7 @@ end = struct
     | Tderef { type'; _ }
     | Tfor { type'; _ } ->
         type'
+    | Tresume _ -> Sunit_type
 
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
@@ -680,7 +651,8 @@ end = struct
       | Tapp { span; _ }
       | Tunit { span; _ }
       | Ttuple { span; _ }
-      | Tvector { span; _ }
+      | Tlist { span; _ }
+      | Tslice { span; _ }
       | Ttuple_subscript { span; _ }
       | Tsubscript { span; _ }
       | Tassign { span; _ }
@@ -693,10 +665,12 @@ end = struct
       | Tlet { span; _ }
       | Tseq { span; _ }
       | Tlambda { closure = Tclosure { span; _ } }
+      | Tlambda { closure = Tsuspend { span; _ } }
       | Tdef { span; _ }
       | Tprimop { span; _ }
       | Tfor { span; _ }
       | Tmatch { span; _ }
+      | Tresume { span; _ }
       | Tif { span; _ } ->
           span
   end
@@ -706,6 +680,11 @@ and Closure : sig
   type t =
     | Tclosure of {
         parameter : Symbol.t * Simple_type.t;
+        value : T.t;
+        span : (Span.span[@compare.ignore]);
+      }
+    | Tsuspend of {
+        continuation : Symbol.t * Simple_type.t;
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
@@ -719,17 +698,23 @@ end = struct
         value : T.t;
         span : (Span.span[@compare.ignore]);
       }
+    | Tsuspend of {
+        continuation : Symbol.t * Simple_type.t;
+        value : T.t;
+        span : (Span.span[@compare.ignore]);
+      }
   [@@deriving compare, sexp]
 
   let type_of = function
     | Tclosure { parameter = _, type'; value; _ } ->
         Simple_type.Sfunction_type
           { argument = type'; result = T.type_of value }
+    | Tsuspend { continuation = _, type'; _ } -> type'
 
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
 
-    let span = function Tclosure { span; _ } -> span
+    let span = function Tclosure { span; _ } | Tsuspend { span; _ } -> span
   end
 end
 
@@ -757,6 +742,39 @@ end = struct
       }
     | Tdone
   [@@deriving compare, sexp]
+end
+
+and Alt : sig
+  type t =
+    | Talt of {
+        tag : Symbol.t;
+        name : Symbol.t * Simple_type.t;
+        expr : T.t;
+        span : (Span.span[@compare.ignore]);
+        rest : t;
+      }
+    | Tno_match
+  [@@deriving compare, sexp]
+
+  val case_types : t -> (Symbol.t * Simple_type.t) list
+end = struct
+  type t =
+    | Talt of {
+        tag : Symbol.t;
+        name : Symbol.t * Simple_type.t;
+        expr : T.t;
+        span : (Span.span[@compare.ignore]);
+        rest : t;
+      }
+    | Tno_match
+  [@@deriving compare, sexp]
+
+  let case_types t =
+    let rec loop cases = function
+      | Tno_match -> cases
+      | Talt { tag; name = _, ty; rest; _ } -> loop ((tag, ty) :: cases) rest
+    in
+    loop [] t
 end
 
 module Tests = struct

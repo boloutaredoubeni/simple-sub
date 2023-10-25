@@ -16,7 +16,7 @@ exception
   }
 
 exception
-  Slice_of_vector_error of { value : Symbol.t; span : Span.t; message : string }
+  Slice_of_list_error of { value : Symbol.t; span : Span.t; message : string }
 
 type read_or_write = Read | Write | Writeonly
 
@@ -84,6 +84,8 @@ functor
               let open Level in
               match ty with
               | t when Simple_type.level t <= limit -> t
+              | Scontinuation { argument; scope } ->
+                  Scontinuation { argument = freshen argument; scope }
               | Smutable { read; write; scope } ->
                   Smutable { read = freshen read; write = freshen write; scope }
               | Svar_type { state } when Option.is_some (freshened#get state) ->
@@ -125,10 +127,10 @@ functor
                   let read = Option.map read ~f:freshen in
                   let write = Option.map write ~f:freshen in
                   Sreference { read; write; scope }
-              | Svector_type { read; write; scope } ->
+              | Slist_type { read; write; scope } ->
                   let read = Option.map read ~f:freshen in
                   let write = Option.map write ~f:freshen in
-                  Svector_type { read; write; scope }
+                  Slist_type { read; write; scope }
               | Srecord { fields } ->
                   Srecord
                     {
@@ -194,6 +196,9 @@ module Extrude = struct
       | Sunit_type -> Sunit_type
       | Schar_type -> Schar_type
       | Sstring_type -> Sstring_type
+      | Scontinuation { argument; scope } ->
+          Scontinuation
+            { argument = extrude self (create_type argument); scope }
       | Smutable { read; write; scope } ->
           let read = extrude self (create_type read) in
           let write =
@@ -230,7 +235,7 @@ module Extrude = struct
                 extrude self (Polar.Type.create write (Polar.not polarity)))
           in
           Sreference { read; write; scope }
-      | Svector_type { read; write; scope } ->
+      | Slist_type { read; write; scope } ->
           let read =
             Option.map read ~f:(fun read -> extrude self (create_type read))
           in
@@ -238,7 +243,7 @@ module Extrude = struct
             Option.map write ~f:(fun write ->
                 extrude self (Polar.Type.create write (Polar.not polarity)))
           in
-          Svector_type { read; write; scope }
+          Slist_type { read; write; scope }
       | Srecord { fields } ->
           Srecord
             {
@@ -327,6 +332,12 @@ module Constrain = struct
         | Sbool_type, Sbool_type -> ()
         | Sunit_type, Sunit_type -> ()
         | Sstring_type, Sstring_type -> ()
+        | ( Scontinuation { argument = rhs; _ },
+            Scontinuation { argument = lhs; _ } ) ->
+            constrain (Constraint { lhs; rhs })
+        | Scontinuation _, _ -> failwith "continuations in lhs"
+        | _, Scontinuation _ -> failwith "continuations in rhs"
+        | Schar_type, Schar_type -> ()
         | Smutable _, Smutable _ -> failwith "mutable type is not allowed yet"
         | Smutable _, _ ->
             failwith "mutable type is not allowed yet (mutable is lhs)"
@@ -396,8 +407,8 @@ module Constrain = struct
             | None, Some rhs ->
                 raise (Readability_error { value = rhs; rw = Write })
             | _ -> ())
-        | ( Svector_type { read = lhs_read; write = lhs_write; _ },
-            Svector_type { read = rhs_read; write = rhs_write; _ } ) -> (
+        | ( Slist_type { read = lhs_read; write = lhs_write; _ },
+            Slist_type { read = rhs_read; write = rhs_write; _ } ) -> (
             (match (lhs_read, rhs_read) with
             | Some lhs_read, Some rhs_read ->
                 constrain (Constraint { lhs = lhs_read; rhs = rhs_read })
@@ -457,6 +468,7 @@ module type MAPPER = sig
   val map_ast : self -> Syntax.t -> Tast.t
   val map_closure : self -> Syntax.Closure.t -> Closure.t
   val map_iterate : self -> Syntax.iterate -> self * Tast.Iterate.t
+  val map_cases : self -> Syntax.alt -> Simple_type.t * Tast.Alt.t
 end
 
 module type S = sig
@@ -597,7 +609,19 @@ functor
             | Gt, Sfloat_type, Sfloat_type -> Tfloat_gt
             | Eq, Sbool_type, Sbool_type -> Tbool_eq
             | Neq, Sbool_type, Sbool_type -> Tbool_ne
-            | _ -> assert false
+            | Eq, lhs, Sint_type ->
+                constrain lhs Sint_type;
+                Tint_eq
+            | op, lhs, rhs ->
+                failwith
+                  (Printf.sprintf "invalid relop: %s %s %s"
+                     (Simple_type.to_string
+                        ~visited:(Set.empty (module Symbol))
+                        lhs)
+                     (Op.to_string op)
+                     (Simple_type.to_string
+                        ~visited:(Set.empty (module Symbol))
+                        rhs))
           in
           Tprimop { op; args = [ left; right ]; span; type' = Sbool_type }
       | Uvar { value; span } when Self.contains self value ->
@@ -622,61 +646,62 @@ functor
             | _ -> assert false
           in
           Ttuple { first; second; rest; span }
-      | Uvector { values; span; mutability = Mutability.Immutable } ->
+      | Ulist { values; span; mutability = Mutability.Immutable } ->
           let values = List.map values ~f:(map_ast self) in
 
           let read = S.Fresh_var.f (Self.level self) in
           List.iter values ~f:(fun value ->
               constrain (Tast.T.type_of value) read);
           let type' =
-            Svector_type
+            Slist_type
               { read = Some read; write = None; scope = Self.scope self }
           in
-          Tvector { values; span; type' }
-      | Uvector { values; span; mutability = Mutability.Mutable } ->
+          Tlist { values; span; type' }
+      | Ulist { values; span; mutability = Mutability.Mutable } ->
           let values = List.map values ~f:(map_ast self) in
           let write = S.Fresh_var.f (Self.level self) in
           let read = S.Fresh_var.f (Self.level self) in
           List.iter values ~f:(fun value ->
               constrain (Tast.T.type_of value) read);
           let type' =
-            Svector_type
+            Slist_type
               { read = Some read; write = Some write; scope = Self.scope self }
           in
-          Tvector { values; span; type' }
-      | Uvector { values; span; mutability = Mutability.Reference } ->
+          Tlist { values; span; type' }
+      | Ulist { values; span; mutability = Mutability.Reference } ->
           let values = List.map values ~f:(map_ast self) in
           let write = S.Fresh_var.f (Self.level self) in
           let read = S.Fresh_var.f (Self.level self) in
           List.iter values ~f:(fun value ->
               constrain (Tast.T.type_of value) read);
           let type' =
-            Svector_type
+            Slist_type
               { read = Some read; write = Some write; scope = Scope.Global }
           in
-          Tvector { values; span; type' }
-      | Uvector { mutability = Mutability.MutableReference; _ } -> assert false
-      | Uslice { value; readability = Readability.Readonly; span }
+          Tlist { values; span; type' }
+      | Ulist { mutability = Mutability.MutableReference; _ } -> assert false
+      | Uslice
+          { value; readability = Readability.Readonly; span; start; finish }
         when Self.contains self value ->
           let type' =
             let scheme = Self.find_exn self value in
             match TypeScheme.instantiate scheme (Self.level self) with
-            | Svector_type
+            | Slist_type
                 { read = Some read; write = Some _; scope = Scope.Global } ->
-                Svector_type
+                Slist_type
                   { read = Some read; write = None; scope = Scope.default }
-            | Svector_type { read = Some _; write = None; _ } ->
+            | Slist_type { read = Some _; write = None; _ } ->
                 raise
-                  (Slice_of_vector_error
-                     { value; span; message = "vector is already readonly" })
-            | Svector_type { read = Some _; write = Some _; _ } ->
+                  (Slice_of_list_error
+                     { value; span; message = "list is already readonly" })
+            | Slist_type { read = Some _; write = Some _; _ } ->
                 raise
-                  (Slice_of_vector_error
+                  (Slice_of_list_error
                      {
                        value;
                        span;
                        message =
-                         "mutable vectors cannot explicitly be made readonly";
+                         "mutable lists cannot explicitly be made readonly";
                      })
             | ty ->
                 let level = Self.level self in
@@ -687,39 +712,52 @@ functor
                 in
                 raise (Type_error { expected; actual = ty; span })
           in
-          Tvar { value; span; type' }
-      | Uslice { value; readability = Readability.ReadWrite; span }
+          let start = Option.map start ~f:(map_ast self) in
+          Option.iter start ~f:(fun start ->
+              constrain (Tast.T.type_of start) Sint_type);
+          let finish = Option.map finish ~f:(map_ast self) in
+          Option.iter finish ~f:(fun finish ->
+              constrain (Tast.T.type_of finish) Sint_type);
+          Tslice { name = value; span; start; finish; type' }
+      | Uslice
+          { value; readability = Readability.ReadWrite; span; start; finish }
         when Self.contains self value ->
           let type' =
             let scheme = Self.find_exn self value in
             match TypeScheme.instantiate scheme (Self.level self) with
-            | Svector_type
+            | Slist_type
                 { read = Some read; write = Some write; scope = Scope.Global }
               ->
-                Svector_type
+                Slist_type
                   { read = Some read; write = Some write; scope = Scope.Global }
-            | Svector_type { read = Some _; write = None; _ } ->
+            | Slist_type { read = Some _; write = None; _ } ->
                 raise
-                  (Slice_of_vector_error
-                     { value; span; message = "vector is readonly" })
-            | Svector_type { read = Some _; write = Some _; _ } ->
+                  (Slice_of_list_error
+                     { value; span; message = "list is readonly" })
+            | Slist_type { read = Some _; write = Some _; _ } ->
                 raise
-                  (Slice_of_vector_error
+                  (Slice_of_list_error
                      {
                        value;
                        span;
-                       message = "mutable vectors are already readwrite locally";
+                       message = "mutable lists are already readwrite locally";
                      })
             | ty ->
                 let level = Self.level self in
                 let res = S.Fresh_var.f level in
                 let expected =
-                  Svector_type
+                  Slist_type
                     { read = Some res; write = Some res; scope = Scope.Global }
                 in
                 raise (Type_error { expected; actual = ty; span })
           in
-          Tvar { value; span; type' }
+          let start = Option.map start ~f:(map_ast self) in
+          Option.iter start ~f:(fun start ->
+              constrain (Tast.T.type_of start) Sint_type);
+          let finish = Option.map finish ~f:(map_ast self) in
+          Option.iter finish ~f:(fun finish ->
+              constrain (Tast.T.type_of finish) Sint_type);
+          Tslice { name = value; span; start; finish; type' }
       | Uslice { readability = Readability.Writeonly; _ } ->
           failwith "slices cannot be writeonly without annotations"
       | Uslice { value; span; _ } -> raise (Unbound_variable { value; span })
@@ -735,7 +773,7 @@ functor
           let index = map_ast self index in
           let res = S.Fresh_var.f (Self.level self) in
           constrain type'
-            (Simple_type.Svector_type
+            (Simple_type.Slist_type
                { read = Some res; write = None; scope = Self.scope self });
           constrain (Tast.T.type_of index) Sint_type;
           Tsubscript { value; index; span; type' = res }
@@ -850,9 +888,9 @@ functor
           let type' =
             let scheme = Self.find_exn self name in
             match TypeScheme.instantiate scheme (Self.level self) with
-            | Svector_type { scope = Scope.Global; write = Some write; _ } ->
+            | Slist_type { scope = Scope.Global; write = Some write; _ } ->
                 write
-            | Svector_type { scope; write = Some write; _ }
+            | Slist_type { scope; write = Some write; _ }
               when Scope.(scope = Self.scope self) ->
                 write
             | ty ->
@@ -860,7 +898,7 @@ functor
                   (Type_error
                      {
                        expected =
-                         Simple_type.Svector_type
+                         Simple_type.Slist_type
                            {
                              read = None;
                              write = Some value_type;
@@ -883,34 +921,8 @@ functor
           Tcase { case; value; span }
       | Umatch { value; cases; span } ->
           let value = map_ast self value in
-          let type' = S.Fresh_var.f (Self.level self) in
-          let _, cases =
-            List.fold cases ~init:([], [])
-              ~f:(fun (found, pairs) (tag, name, expr) ->
-                let name =
-                  match name with Some name -> name | None -> S.Fresh_sym.f ()
-                in
-                if List.mem found tag ~equal:Symbol.equal then
-                  failwith "dupe tag"
-                else
-                  let ty = S.Fresh_var.f (Self.level self) in
-
-                  let scheme =
-                    TypeScheme.of_polymorphic_type
-                      (PolymorhicType.create (Self.level self) ty)
-                  in
-                  let rhs_value =
-                    map_ast
-                      (Self.add (Self.level_up self) ~key:name ~data:scheme)
-                      expr
-                  in
-                  let rhs = Tast.T.type_of rhs_value in
-                  constrain rhs type';
-                  (tag :: found, (tag, (name, ty), rhs_value) :: pairs))
-          in
-          let cases_types =
-            List.map cases ~f:(fun (tag, (_, ty), _) -> (tag, ty))
-          in
+          let type', cases = map_cases self cases in
+          let cases_types = Tast.Alt.case_types cases in
           constrain (Tast.T.type_of value) (Scases { cases = cases_types });
           Tmatch { value; cases; type'; span }
       | Urecord { proto = None; fields; span } ->
@@ -1090,6 +1102,19 @@ functor
           let body = map_ast self body in
           constrain (Tast.T.type_of body) Sunit_type;
           Tfor { iterate; body; span; type' = Sunit_type }
+      | Uresume { continuation; value; span }
+        when Self.contains self continuation ->
+          let scheme = Self.find_exn self continuation in
+          let continuation_type =
+            TypeScheme.instantiate scheme (Self.level self)
+          in
+          let value = map_ast self value in
+          constrain continuation_type
+            (Simple_type.Scontinuation
+               { argument = Tast.T.type_of value; scope = Self.scope self });
+          Tresume { continuation; value; span }
+      | Uresume { continuation; span; _ } ->
+          raise (Unbound_variable { value = continuation; span })
 
     and map_iterate self iterate =
       let rec loop self iter =
@@ -1119,16 +1144,83 @@ functor
       in
       loop self iterate
 
-    and map_closure self (Syntax.Uclosure { parameter; value; span }) =
-      let self = Self.incr_scope self in
-      let type' = S.Fresh_var.f (Self.level self) in
+    and map_closure self = function
+      | Syntax.Uclosure { parameter; value; span } ->
+          let self = Self.incr_scope self in
+          let type' = S.Fresh_var.f (Self.level self) in
 
-      let self =
-        let type' = TypeScheme.of_simple_type type' in
-        Self.add self ~key:parameter ~data:type'
+          let self =
+            let type' = TypeScheme.of_simple_type type' in
+            Self.add self ~key:parameter ~data:type'
+          in
+          Tclosure
+            { parameter = (parameter, type'); value = map_ast self value; span }
+      | Syntax.Ususpend { continuation; body; span } ->
+          let self = Self.incr_scope self in
+          let argument = S.Fresh_var.f (Self.level self) in
+          let scope = Self.scope self in
+          let cont = Simple_type.Scontinuation { argument; scope } in
+          let self =
+            let type' = TypeScheme.of_simple_type cont in
+            Self.add self ~key:continuation ~data:type'
+          in
+          Tsuspend
+            {
+              continuation = (continuation, argument);
+              value = map_ast self body;
+              span;
+            }
+
+    and map_cases self cases : Simple_type.t * Tast.Alt.t =
+      let found = ref [] in
+      let type' = S.Fresh_var.f (Self.level self) in
+      let rec loop self =
+        let open Syntax in
+        let open Tast.Alt in
+        function
+        | Uno_match -> Tno_match
+        | Ualt { name = None; tag; expr; span; rest }
+          when not (List.mem !found tag ~equal:Symbol.equal) ->
+            found := tag :: !found;
+            let name = S.Fresh_sym.f () in
+            let ty = S.Fresh_var.f (Self.level self) in
+            let scheme =
+              TypeScheme.of_polymorphic_type
+                (PolymorhicType.create (Self.level self) ty)
+            in
+            let rhs_value =
+              map_ast
+                (Self.add (Self.level_up self) ~key:name ~data:scheme)
+                expr
+            in
+            let rhs = Tast.T.type_of rhs_value in
+            constrain rhs type';
+
+            let rest = loop self rest in
+            Talt { name = (name, ty); tag; expr = rhs_value; span; rest }
+        | Ualt { name = Some name; tag; expr; span; rest }
+          when not (List.mem !found tag ~equal:Symbol.equal) ->
+            found := tag :: !found;
+            let ty = S.Fresh_var.f (Self.level self) in
+            let scheme =
+              TypeScheme.of_polymorphic_type
+                (PolymorhicType.create (Self.level self) ty)
+            in
+            let rhs_value =
+              map_ast
+                (Self.add (Self.level_up self) ~key:name ~data:scheme)
+                expr
+            in
+            let rhs = Tast.T.type_of rhs_value in
+            constrain rhs type';
+
+            let rest = loop self rest in
+            Talt { name = (name, ty); tag; expr = rhs_value; span; rest }
+        | Ualt { tag; _ } when List.mem !found tag ~equal:Symbol.equal ->
+            failwith "dupe tag"
+        | Ualt _ -> assert false
       in
-      Tclosure
-        { parameter = (parameter, type'); value = map_ast self value; span }
+      (type', loop self cases)
 
     let map ast =
       Or_error.try_with (fun () ->
@@ -1306,23 +1398,23 @@ module Tests = struct
     run_it "(1, 2, true).2";
     [%expect {| bool <: '__0 |}]
 
-  let%expect_test "empty vector" =
+  let%expect_test "empty list" =
     run_it "[||]";
-    [%expect {| vector['__0, _] @ 0 |}]
+    [%expect {| list['__0, _] @ 0 |}]
 
-  let%expect_test "vector" =
+  let%expect_test "list" =
     run_it "[| 1, 2 |]";
-    [%expect {| vector[int | int <: '__0, _] @ 0 |}]
+    [%expect {| list[int | int <: '__0, _] @ 0 |}]
 
-  let%expect_test "union vector" =
+  let%expect_test "union list" =
     run_it "[| 1, true |]";
-    [%expect {| vector[bool | int <: '__0, _] @ 0 |}]
+    [%expect {| list[bool | int <: '__0, _] @ 0 |}]
 
-  let%expect_test "vector subscript" =
+  let%expect_test "list subscript" =
     run_it "let xs = [| 1, 2 |] in xs[0]";
     [%expect {| int <: '__1 |}]
 
-  let%expect_test "union vector subscript" =
+  let%expect_test "union list subscript" =
     run_it "let xs = [| true, 2 |] in xs[0]";
     [%expect {| bool | int <: '__1 |}]
 
@@ -1334,34 +1426,34 @@ module Tests = struct
     run_it "x = 1";
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
-  let%expect_test "vector update" =
+  let%expect_test "list update" =
     run_it "xs[0] = 1";
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
-  let%expect_test "readonly vector" =
+  let%expect_test "readonly list" =
     run_it {|
       let xs = [| 0, 1|] in
       xs[0] = 1 |};
     [%expect
       {|
      Type error
-       expected: vector[_, int] @ 0
-       actual: vector[int | int <: '__0 @ 1, _] @ 0
+       expected: list[_, int] @ 0
+       actual: list[int | int <: '__0 @ 1, _] @ 0
        span: stdin:3:6:3:15 |}]
 
-  let%expect_test "local readwrite vector" =
+  let%expect_test "local readwrite list" =
     run_it {|
        let xs = mut [| 0, 1|] in
        xs[0] = 1 |};
     [%expect {| () |}]
 
-  let%expect_test "readwrite vector, no passing" =
+  let%expect_test "readwrite list, no passing" =
     run_it {|
        let xs = ref [| 0, 1|] in
        xs[0] = 1 |};
     [%expect {| () |}]
 
-  let%expect_test "readwrite vector, capture readonly" =
+  let%expect_test "readwrite list, capture readonly" =
     run_it
       {|
        let xs = mut [| 0, 1|] in
@@ -1371,11 +1463,11 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: vector[_, '__2 @ 1] @ 1
-       actual: vector[int | int <: '__1 @ 1, '__0 @ 1] @ 0
+       expected: list[_, '__2 @ 1] @ 1
+       actual: list[int | int <: '__1 @ 1, '__0 @ 1] @ 0
        span: stdin:3:18:3:27 |}]
 
-  let%expect_test "readwrite vector, capture readwrite" =
+  let%expect_test "readwrite list, capture readwrite" =
     run_it
       {|
        let xs = ref [| 0, 1|] in
@@ -1384,55 +1476,55 @@ module Tests = struct
        f 1|};
     [%expect {| () <: '__3 |}]
 
-  let%expect_test "readonly vector" =
+  let%expect_test "readonly list" =
     run_it "xs[..]";
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
-  let%expect_test "readwrite vector" =
+  let%expect_test "readwrite list" =
     run_it "&mut xs[..]";
     [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
 
-  let%expect_test "immutable vectors are already readonly" =
+  let%expect_test "immutable lists are already readonly" =
     run_it {|
       let xs = [| 0, 1|] in
       xs[..] |};
     [%expect
-      {| ("Fx__Typing.Slice_of_vector_error(_, _, \"vector is already readonly\")") |}]
+      {| ("Fx__Typing.Slice_of_list_error(_, _, \"list is already readonly\")") |}]
 
-  let%expect_test "immutable vectors cannot be made writeable" =
+  let%expect_test "immutable lists cannot be made writeable" =
     run_it {|
        let xs = [| 0, 1|] in
        &mut xs[..] |};
     [%expect
-      {| ("Fx__Typing.Slice_of_vector_error(_, _, \"vector is readonly\")") |}]
+      {| ("Fx__Typing.Slice_of_list_error(_, _, \"list is readonly\")") |}]
 
-  let%expect_test "mutable vectors can only be captured as readonly" =
+  let%expect_test "mutable lists can only be captured as readonly" =
     run_it {|
       let xs = mut [| 0, 1|] in
       xs[..] |};
     [%expect
-      {| ("Fx__Typing.Slice_of_vector_error(_, _, \"mutable vectors cannot explicitly be made readonly\")") |}]
+      {| ("Fx__Typing.Slice_of_list_error(_, _, \"mutable lists cannot explicitly be made readonly\")") |}]
 
-  let%expect_test "mutable vectors can only be captured as readonly" =
+  let%expect_test "mutable lists can only be captured as readonly" =
     run_it {|
       let xs = mut [| 0, 1|] in
       &mut xs[..] |};
     [%expect
-      {| ("Fx__Typing.Slice_of_vector_error(_, _, \"mutable vectors are already readwrite locally\")") |}]
+      {| ("Fx__Typing.Slice_of_list_error(_, _, \"mutable lists are already readwrite locally\")") |}]
 
-  let%expect_test "reference vectors can be captured as readonly" =
+  let%expect_test "reference lists can be captured as readonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
       xs[..] |};
-    [%expect {| vector[int | int <: '__1 @ 1, _] @ 0 |}]
+    [%expect {| list[int | int <: '__1 @ 1, _] @ 0 |}]
 
-  let%expect_test "reference vectors can be captured as readonly" =
+  let%expect_test "reference lists can be captured as readonly" =
     run_it {|
       let xs = ref [| 0, 1|] in
       &mut xs[..] |};
-    [%expect {| vector[int | int <: '__1 @ 1, '__0 @ 1] |}]
+    [%expect {| list[int | int <: '__1 @ 1, '__0 @ 1] |}]
 
-  let%expect_test "readonly vectors cannot be written" =
+  let%expect_test "readonly lists cannot be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1441,11 +1533,11 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: vector[_, int] @ 0
-       actual: vector[int | int <: '__1 @ 1, _] @ 0
+       expected: list[_, int] @ 0
+       actual: list[int | int <: '__1 @ 1, _] @ 0
        span: stdin:4:6:4:15 |}]
 
-  let%expect_test "readwrite vectors can be read" =
+  let%expect_test "readwrite lists can be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1453,7 +1545,7 @@ module Tests = struct
       ys[1] |};
     [%expect {| int <: '__2 |}]
 
-  let%expect_test "readonly vectors can be read" =
+  let%expect_test "readonly lists can be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1461,7 +1553,7 @@ module Tests = struct
       ys[1] |};
     [%expect {| int <: '__2 |}]
 
-  let%expect_test "readwrite vectors be written" =
+  let%expect_test "readwrite lists be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1469,7 +1561,7 @@ module Tests = struct
       ys[1] = 10 |};
     [%expect {| () |}]
 
-  let%expect_test "captured readonly vectors cannot be written" =
+  let%expect_test "captured readonly lists cannot be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1479,11 +1571,11 @@ module Tests = struct
     [%expect
       {|
        Type error
-         expected: vector[_, '__2 @ 1] @ 1
-         actual: vector[int | int <: '__1 @ 1, _] @ 0
+         expected: list[_, '__2 @ 1] @ 1
+         actual: list[int | int <: '__1 @ 1, _] @ 0
          span: stdin:4:17:4:26 |}]
 
-  let%expect_test "captured readwrite vectors can only be read" =
+  let%expect_test "captured readwrite lists can only be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1492,7 +1584,7 @@ module Tests = struct
       f () |};
     [%expect {| int <: '__4 |}]
 
-  let%expect_test "passed readonly vectors cannot be written" =
+  let%expect_test "passed readonly lists cannot be written" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1501,12 +1593,12 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: vector[_, int] @ 1
+       expected: list[_, int] @ 1
        actual: '__2 @ 1
        span: stdin:3:18:3:28 |}]
 
-  let%expect_test "passed writeonly vectors cannot be written without \
-                   annotations" =
+  let%expect_test "passed writeonly lists cannot be written without annotations"
+      =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1515,11 +1607,11 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: vector[_, int] @ 1
+       expected: list[_, int] @ 1
        actual: '__2 @ 1
        span: stdin:3:18:3:28 |}]
 
-  let%expect_test "passed readonly vectors be read" =
+  let%expect_test "passed readonly lists be read" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1527,7 +1619,7 @@ module Tests = struct
       f xs[..] |};
     [%expect {| int <: '__4 |}]
 
-  let%expect_test "passed readonly vectors cannot be made writable" =
+  let%expect_test "passed readonly lists cannot be made writable" =
     run_it
       {|
       let xs = ref [| 0, 1|] in
@@ -1538,7 +1630,7 @@ module Tests = struct
     [%expect
       {|
      Type error
-       expected: vector['__3 @ 2, '__3 @ 2]
+       expected: list['__3 @ 2, '__3 @ 2]
        actual: '__2 @ 1
        span: stdin:4:17:4:28 |}]
 
@@ -1740,8 +1832,8 @@ module Tests = struct
     [%expect
       {|
       Type error
-        expected: vector[_, int] @ 0
-        actual: vector[int | int <: '__1 @ 1, _] @ 0
+        expected: list[_, int] @ 0
+        actual: list[int | int <: '__1 @ 1, _] @ 0
         span: stdin:4:6:4:15 |}]
 
   let%expect_test "readwrite reference can be read" =
@@ -2038,4 +2130,111 @@ module Tests = struct
         end
     |};
     [%expect {|  bool <: '__0 |}]
+
+  let%expect_test "suspend block" =
+    run_it {|
+        suspend k =>() end
+    |};
+    [%expect {| '__0 |}]
+
+  let%expect_test "suspend function" =
+    run_it {|
+      let f x k => () in
+      f
+    |};
+    [%expect {| '__3 -> '__2 |}]
+
+  let%expect_test "suspend rec" =
+    run_it {|
+      def f x k => () in
+      f
+    |};
+    [%expect {| '__5 -> '__4 <: '__3 |}]
+
+  let%expect_test "suspend lambda" =
+    run_it {|
+      fn x k => () end
+    |};
+    [%expect {| '__0 -> '__1 |}]
+
+  let%expect_test "resume value" =
+    run_it {| resume k 1 |};
+    [%expect {| ("Fx__Typing.Unbound_variable(_, _)") |}]
+
+  let%expect_test "resume in suspension" =
+    run_it {| suspend k => resume k 1 end|};
+    [%expect {| int <: '__0 |}]
+
+  let%expect_test "resume by if" =
+    run_it {| suspend k => if true then resume k 1 end end|};
+    [%expect {| int <: '__0 |}]
+
+  let%expect_test "resume by match" =
+    run_it
+      {| 
+      suspend k => 
+        match Some 0
+          case Some v -> resume k 0,
+          case None -> ()
+        end
+      end
+    |};
+    [%expect {|   int <: '__0 |}]
+
+  let%expect_test "non tail resumption" =
+    run_it
+      {|
+      suspend k => 
+        let x = resume k 1 in
+        x
+      end
+    |};
+    [%expect {| int <: '__0 |}]
+
+  let%expect_test "multiple resumptions" =
+    run_it
+      {|
+      suspend k => 
+        (resume k 1);
+        resume k 2
+      end
+    |};
+    [%expect {| int | int <: '__0 |}]
+
+  let%expect_test "suspended function" =
+    run_it {|
+      let f x k => resume k 1 in
+      f
+    |};
+    [%expect {| '__3 -> int <: '__2 |}]
+
+  let%expect_test "suspended rec" =
+    run_it {|
+      def f x k => resume k 1 in
+      f
+    |};
+    [%expect {| '__5 -> int <: '__4 <: '__3 |}]
+
+  let%expect_test "suspended lambda" =
+    run_it {|
+      fn x k => resume k 1 end
+    |};
+    [%expect {| '__0 -> int <: '__1 |}]
+
+  let%expect_test "recursively applied function" =
+    run_it
+      {|
+      def f x k => 
+        match x 
+          case Continue st -> 
+            if st == 0 then
+              f (Break st)
+            else 
+              f (Continue (st - 1)),
+          case Break st -> resume k st
+        end
+      in f
+    |};
+    [%expect
+      {| [case Break '__22 <: '__21 <: '__20 <: __20 | int -> '__21 | int | int] | [case Continue '__21 <: '__20 <: __20] <: '__19 <: [case Break '__23 <: '__22 <: '__21 <: '__20 <: __20 | int -> '__21 | int | int | '__15 <: '__18 <: () <: '__17 | '__16 <: () <: '__17| case Continue '__22 <: '__21 <: '__20 <: __20 | int -> '__21 | int | int] -> '__15 <: '__18 <: () <: '__17 | '__16 <: () <: '__17 <: '__14 <: [case Continue '__21 <: '__20 <: __20] -> '__16 <: () <: '__17 | [case Break '__22 <: '__21 <: '__20 <: __20 | int -> '__21 | int | int] -> '__18 <: () <: '__17 |}]
 end

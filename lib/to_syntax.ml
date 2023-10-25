@@ -73,7 +73,7 @@ module Tests = struct
   let%expect_test "let closure" =
     run_it "let f x -> x in f 1";
     [%expect
-      {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 11)))(finish(Position(line 1)(column 12)))))))(span(Span(filename stdin)(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 11)))))))(app(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 17)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 18)))(finish(Position(line 1)(column 19)))))))(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 19)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 19)))))) |}]
+      {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 11)))(finish(Position(line 1)(column 12)))))))(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 11)))))))(app(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 17)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 18)))(finish(Position(line 1)(column 19)))))))(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 19)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 19)))))) |}]
 
   let%expect_test "closure" =
     run_it "fn x -> x end";
@@ -83,7 +83,7 @@ module Tests = struct
   let%expect_test "def" =
     run_it "def f x = x in f 0";
     [%expect
-      {| (Udef(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 11)))))))(span(Span(filename stdin)(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 10)))))))(app(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 1)(column 15)))(finish(Position(line 1)(column 16)))))))(value(Uint(value 0)(span(Span(filename stdin)(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 15)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 18)))))) |}]
+      {| (Udef(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 11)))))))(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10)))))))(app(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 1)(column 15)))(finish(Position(line 1)(column 16)))))))(value(Uint(value 0)(span(Span(filename stdin)(start(Position(line 1)(column 17)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 15)))(finish(Position(line 1)(column 18)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 18)))))) |}]
 
   let%expect_test "bad def" =
     run_it "def f = x in f 0";
@@ -154,49 +154,64 @@ module Tests = struct
     [%expect
       {| (Utuple_subscript(value(Utuple(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 2))))))(Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5))))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))))(index 0)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 8)))))) |}]
 
-  let%expect_test "empty vector" =
+  let%expect_test "empty list" =
     run_it "[||]";
     [%expect
-      {| (Uvector(values())(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
+      {| (Ulist(values())(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 4)))))) |}]
 
-  let%expect_test "vector" =
+  let%expect_test "list" =
     run_it "[| 1, 2 |]";
     [%expect
-      {| (Uvector(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
+      {| (Ulist(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 7))))))))(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
 
-  let%expect_test "union vector" =
+  let%expect_test "union list" =
     run_it "[| 1, true |]";
     [%expect
-      {| (Uvector(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Ubool(value true)(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10))))))))(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
+      {| (Ulist(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4))))))(Ubool(value true)(span(Span(filename stdin)(start(Position(line 1)(column 6)))(finish(Position(line 1)(column 10))))))))(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 13)))))) |}]
 
-  let%expect_test "vector subscript" =
+  let%expect_test "list subscript" =
     run_it {| let xs = [| 1, 2 |] in xs[0] |};
     [%expect
-      {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Uvector(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 13)))(finish(Position(line 1)(column 14))))))(Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 17))))))))(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 20)))))))(app(Usubscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28)))))))(span(Span(filename stdin)(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 29)))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 29)))))) |}]
+      {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Ulist(values((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 13)))(finish(Position(line 1)(column 14))))))(Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 16)))(finish(Position(line 1)(column 17))))))))(mutability Immutable)(span(Span(filename stdin)(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 20)))))))(app(Usubscript(value(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 1)(column 27)))(finish(Position(line 1)(column 28)))))))(span(Span(filename stdin)(start(Position(line 1)(column 24)))(finish(Position(line 1)(column 29)))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 29)))))) |}]
 
-  let%expect_test "local readwrite vector" =
+  let%expect_test "local readwrite list" =
     run_it {|
        let xs = mut [| 0, 1|] in
        xs[0] = 1 |};
     [%expect
-      {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Uvector(values((Uint(value 0)(span(Span(filename stdin)(start(Position(line 2)(column 23)))(finish(Position(line 2)(column 24))))))(Uint(value 1)(span(Span(filename stdin)(start(Position(line 2)(column 26)))(finish(Position(line 2)(column 27))))))))(mutability Mutable)(span(Span(filename stdin)(start(Position(line 2)(column 16)))(finish(Position(line 2)(column 29)))))))(app(Uassign_subscript(name(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 10)))(finish(Position(line 3)(column 11)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 3)(column 15)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 3)(column 7)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 2)(column 7)))(finish(Position(line 3)(column 16)))))) |}]
+      {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Ulist(values((Uint(value 0)(span(Span(filename stdin)(start(Position(line 2)(column 23)))(finish(Position(line 2)(column 24))))))(Uint(value 1)(span(Span(filename stdin)(start(Position(line 2)(column 26)))(finish(Position(line 2)(column 27))))))))(mutability Mutable)(span(Span(filename stdin)(start(Position(line 2)(column 16)))(finish(Position(line 2)(column 29)))))))(app(Uassign_subscript(name(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 10)))(finish(Position(line 3)(column 11)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 3)(column 15)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 3)(column 7)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 2)(column 7)))(finish(Position(line 3)(column 16)))))) |}]
 
-  let%expect_test "readwrite vector, no passing" =
+  let%expect_test "readwrite list, no passing" =
     run_it {|
        let xs = ref [| 0, 1|] in
        xs[0] = 1 |};
     [%expect
-      {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Uvector(values((Uint(value 0)(span(Span(filename stdin)(start(Position(line 2)(column 23)))(finish(Position(line 2)(column 24))))))(Uint(value 1)(span(Span(filename stdin)(start(Position(line 2)(column 26)))(finish(Position(line 2)(column 27))))))))(mutability Reference)(span(Span(filename stdin)(start(Position(line 2)(column 16)))(finish(Position(line 2)(column 29)))))))(app(Uassign_subscript(name(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 10)))(finish(Position(line 3)(column 11)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 3)(column 15)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 3)(column 7)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 2)(column 7)))(finish(Position(line 3)(column 16)))))) |}]
+      {| (Ulet(binding(Symbol xs))(mutability Immutable)(value(Ulist(values((Uint(value 0)(span(Span(filename stdin)(start(Position(line 2)(column 23)))(finish(Position(line 2)(column 24))))))(Uint(value 1)(span(Span(filename stdin)(start(Position(line 2)(column 26)))(finish(Position(line 2)(column 27))))))))(mutability Reference)(span(Span(filename stdin)(start(Position(line 2)(column 16)))(finish(Position(line 2)(column 29)))))))(app(Uassign_subscript(name(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 10)))(finish(Position(line 3)(column 11)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 3)(column 15)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 3)(column 7)))(finish(Position(line 3)(column 16)))))))(span(Span(filename stdin)(start(Position(line 2)(column 7)))(finish(Position(line 3)(column 16)))))) |}]
 
-  let%expect_test "borrow readonly vector" =
+  let%expect_test "borrow readonly list" =
     run_it "xs[..]";
     [%expect
-      {| (Uslice(value(Symbol xs))(readability Readonly)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))) |}]
+      {| (Uslice(value(Symbol xs))(start())(finish())(readability Readonly)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 6)))))) |}]
 
-  let%expect_test "borrow readwrite vector" =
+  let%expect_test "borrow readwrite list" =
     run_it "&mut xs[..]";
     [%expect
-      {| (Uslice(value(Symbol xs))(readability ReadWrite)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 11)))))) |}]
+      {| (Uslice(value(Symbol xs))(start())(finish())(readability ReadWrite)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 11)))))) |}]
+
+  let%expect_test "slice by tail" =
+    run_it "list[1..]";
+    [%expect
+      {| (Uslice(value(Symbol list))(start((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 5)))(finish(Position(line 1)(column 6))))))))(finish())(readability Readonly)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
+
+  let%expect_test "slice sublist" =
+    run_it "list[1..2]";
+    [%expect
+      {| (Uslice(value(Symbol list))(start((Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 5)))(finish(Position(line 1)(column 6))))))))(finish((Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9))))))))(readability Readonly)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 10)))))) |}]
+
+  let%expect_test "slice upto" =
+    run_it "list[..2]";
+    [%expect
+      {| (Uslice(value(Symbol list))(start())(finish((Uint(value 2)(span(Span(filename stdin)(start(Position(line 1)(column 7)))(finish(Position(line 1)(column 8))))))))(readability Readonly)(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
 
   let%expect_test "let mut" =
     run_it "let mut x = 1 in x";
@@ -208,7 +223,7 @@ module Tests = struct
     [%expect
       {| (Uassign(name(Symbol x))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 4)))(finish(Position(line 1)(column 5)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 5)))))) |}]
 
-  let%expect_test "vector update" =
+  let%expect_test "list update" =
     run_it "xs[0] = 1";
     [%expect
       {| (Uassign_subscript(name(Symbol xs))(index(Uint(value 0)(span(Span(filename stdin)(start(Position(line 1)(column 3)))(finish(Position(line 1)(column 4)))))))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 8)))(finish(Position(line 1)(column 9)))))))(span(Span(filename stdin)(start(Position(line 1)(column 0)))(finish(Position(line 1)(column 9)))))) |}]
@@ -276,7 +291,7 @@ module Tests = struct
         end
         |};
     [%expect
-      {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Utuple(values())(span(Span(filename stdin)(start(Position(line 2)(column 19)))(finish(Position(line 2)(column 21)))))))(span(Span(filename stdin)(start(Position(line 2)(column 12)))(finish(Position(line 2)(column 19)))))))(app(Ufor(iterates(Uiterate(name(Symbol i))(start(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 17)))(finish(Position(line 3)(column 18)))))))(finish(Uint(value 10)(span(Span(filename stdin)(start(Position(line 3)(column 22)))(finish(Position(line 3)(column 24)))))))(is_ascending true)(span(Span(filename stdin)(start(Position(line 3)(column 12)))(finish(Position(line 3)(column 24)))))(rest Udone)))(body(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 4)(column 10)))(finish(Position(line 4)(column 11)))))))(value(Uvar(value(Symbol i))(span(Span(filename stdin)(start(Position(line 4)(column 12)))(finish(Position(line 4)(column 13)))))))(span(Span(filename stdin)(start(Position(line 4)(column 10)))(finish(Position(line 4)(column 13)))))))(span(Span(filename stdin)(start(Position(line 3)(column 8)))(finish(Position(line 5)(column 11)))))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 5)(column 11)))))) |}]
+      {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Utuple(values())(span(Span(filename stdin)(start(Position(line 2)(column 19)))(finish(Position(line 2)(column 21)))))))(span(Span(filename stdin)(start(Position(line 2)(column 14)))(finish(Position(line 2)(column 19)))))))(app(Ufor(iterates(Uiterate(name(Symbol i))(start(Uint(value 0)(span(Span(filename stdin)(start(Position(line 3)(column 17)))(finish(Position(line 3)(column 18)))))))(finish(Uint(value 10)(span(Span(filename stdin)(start(Position(line 3)(column 22)))(finish(Position(line 3)(column 24)))))))(is_ascending true)(span(Span(filename stdin)(start(Position(line 3)(column 12)))(finish(Position(line 3)(column 24)))))(rest Udone)))(body(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 4)(column 10)))(finish(Position(line 4)(column 11)))))))(value(Uvar(value(Symbol i))(span(Span(filename stdin)(start(Position(line 4)(column 12)))(finish(Position(line 4)(column 13)))))))(span(Span(filename stdin)(start(Position(line 4)(column 10)))(finish(Position(line 4)(column 13)))))))(span(Span(filename stdin)(start(Position(line 3)(column 8)))(finish(Position(line 5)(column 11)))))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 5)(column 11)))))) |}]
 
   let%expect_test "for nested loop" =
     run_it
@@ -369,5 +384,48 @@ module Tests = struct
         end
     |};
     [%expect
-      {| (Umatch(value(Uvar(value(Symbol v))(span(Span(filename stdin)(start(Position(line 2)(column 14)))(finish(Position(line 2)(column 15)))))))(cases(((Symbol Some)((Symbol x))(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 3)(column 25)))(finish(Position(line 3)(column 26)))))))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 3)(column 27)))(finish(Position(line 3)(column 28)))))))(span(Span(filename stdin)(start(Position(line 3)(column 25)))(finish(Position(line 3)(column 28)))))))((Symbol None)()(Utuple(values())(span(Span(filename stdin)(start(Position(line 4)(column 23)))(finish(Position(line 4)(column 25)))))))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 5)(column 11)))))) |}]
+      {| (Umatch(value(Uvar(value(Symbol v))(span(Span(filename stdin)(start(Position(line 2)(column 14)))(finish(Position(line 2)(column 15)))))))(cases(Ualt(tag(Symbol Some))(name((Symbol x)))(expr(Uapp(fn(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 3)(column 25)))(finish(Position(line 3)(column 26)))))))(value(Uvar(value(Symbol x))(span(Span(filename stdin)(start(Position(line 3)(column 27)))(finish(Position(line 3)(column 28)))))))(span(Span(filename stdin)(start(Position(line 3)(column 25)))(finish(Position(line 3)(column 28)))))))(span(Span(filename stdin)(start(Position(line 3)(column 10)))(finish(Position(line 3)(column 28)))))(rest(Ualt(tag(Symbol None))(name())(expr(Utuple(values())(span(Span(filename stdin)(start(Position(line 4)(column 23)))(finish(Position(line 4)(column 25)))))))(span(Span(filename stdin)(start(Position(line 4)(column 10)))(finish(Position(line 4)(column 25)))))(rest Uno_match)))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 5)(column 11)))))) |}]
+
+  let%expect_test "suspend block" =
+    run_it {|
+        suspend k => () end
+    |};
+    [%expect
+      {| (Ulambda(closure(Ususpend(continuation(Symbol k))(body(Utuple(values())(span(Span(filename stdin)(start(Position(line 2)(column 21)))(finish(Position(line 2)(column 23)))))))(span(Span(filename stdin)(start(Position(line 2)(column 8)))(finish(Position(line 2)(column 27)))))))) |}]
+
+  let%expect_test "suspend function" =
+    run_it {|
+      let f x k => () in
+      f
+    |};
+    [%expect
+      {| (Ulet_fun(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Ulambda(closure(Ususpend(continuation(Symbol k))(body(Utuple(values())(span(Span(filename stdin)(start(Position(line 2)(column 19)))(finish(Position(line 2)(column 21)))))))(span(Span(filename stdin)(start(Position(line 2)(column 10)))(finish(Position(line 2)(column 19)))))))))(span(Span(filename stdin)(start(Position(line 2)(column 12)))(finish(Position(line 2)(column 19)))))))(app(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 3)(column 6)))(finish(Position(line 3)(column 7)))))))(span(Span(filename stdin)(start(Position(line 2)(column 6)))(finish(Position(line 3)(column 7)))))) |}]
+
+  let%expect_test "suspend rec" =
+    run_it {|
+      def f x k => () in
+      f
+    |};
+    [%expect
+      {| (Udef(name(Symbol f))(closure(Uclosure(parameter(Symbol x))(value(Ulambda(closure(Ususpend(continuation(Symbol k))(body(Utuple(values())(span(Span(filename stdin)(start(Position(line 2)(column 19)))(finish(Position(line 2)(column 21)))))))(span(Span(filename stdin)(start(Position(line 2)(column 10)))(finish(Position(line 2)(column 19)))))))))(span(Span(filename stdin)(start(Position(line 2)(column 12)))(finish(Position(line 2)(column 19)))))))(app(Uvar(value(Symbol f))(span(Span(filename stdin)(start(Position(line 3)(column 6)))(finish(Position(line 3)(column 7)))))))(span(Span(filename stdin)(start(Position(line 2)(column 6)))(finish(Position(line 3)(column 7)))))) |}]
+
+  let%expect_test "suspend lambda" =
+    run_it {|
+      fn x k => () end
+    |};
+    [%expect
+      {| (Ulambda(closure(Uclosure(parameter(Symbol x))(value(Ulambda(closure(Ususpend(continuation(Symbol k))(body(Utuple(values())(span(Span(filename stdin)(start(Position(line 2)(column 16)))(finish(Position(line 2)(column 18)))))))(span(Span(filename stdin)(start(Position(line 2)(column 6)))(finish(Position(line 2)(column 22)))))))))(span(Span(filename stdin)(start(Position(line 2)(column 6)))(finish(Position(line 2)(column 22)))))))) |}]
+
+  let%expect_test "resume" =
+    run_it {| resume |};
+    [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
+
+  let%expect_test "resume" =
+    run_it {| resume k |};
+    [%expect {| (Fx__Parser.MenhirBasics.Error) |}]
+
+  let%expect_test "resume value" =
+    run_it {| resume k 1 |};
+    [%expect
+      {| (Uresume(continuation(Symbol k))(value(Uint(value 1)(span(Span(filename stdin)(start(Position(line 1)(column 10)))(finish(Position(line 1)(column 11)))))))(span(Span(filename stdin)(start(Position(line 1)(column 1)))(finish(Position(line 1)(column 11)))))) |}]
 end

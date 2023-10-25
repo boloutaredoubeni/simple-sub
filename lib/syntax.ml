@@ -39,13 +39,8 @@ module Op = struct
 end
 
 (*
-   TODO: mutual recursion, mutable records, type annotation, let tuple, function patterns
-   TODO: concurrency, error propagation handling/overflow checks (errors must be matched or rethrown), slices, maps, sets, sequences, for comprehensions, early return, break, continue, string interpolation, string concatenation, multiline strings
-   TODO: more advanced type simplification, type monomorphization, pattern match compilation, multi arg functions, better parsing
-   TODO: ownership based reference counting OR immix garbage collection
-   TODO: ANF, CPS, SSA, LLVM
-   TODO: session types and protocols, threads, channels, tensors, subsumption checking for polymorphic annotations, trailing closures, quotes, metaprogramming, row polymorhism?
-   TODO: tree walk eval
+   TODO: (mutable records, record slices), type annotation, (let tuple, record pattern and function case, record and tuple patterns), implicit, suspendable futures
+   TODO: Phases: Untyped -> Typed -> Lambda -> Mono -> ANF -> CPS -> SSA -> LLVM
 *)
 
 module Mutability = struct
@@ -87,11 +82,7 @@ type t =
   | Ustring of { value : string; span : (Span.span[@compare.ignore]) }
   | Uvar of { value : Symbol.t; span : (Span.span[@compare.ignore]) }
   | Ucase of { case : Symbol.t; value : t; span : (Span.span[@compare.ignore]) }
-  | Umatch of {
-      value : t;
-      cases : (Symbol.t * Symbol.t option * t) list;
-      span : (Span.span[@compare.ignore]);
-    }
+  | Umatch of { value : t; cases : alt; span : (Span.span[@compare.ignore]) }
   | Uapp of { fn : t; value : t; span : (Span.span[@compare.ignore]) }
   | Uneg of { value : t; span : (Span.span[@compare.ignore]) }
   | Uop of {
@@ -101,13 +92,15 @@ type t =
       span : (Span.span[@compare.ignore]);
     }
   | Utuple of { values : t list; span : (Span.span[@compare.ignore]) }
-  | Uvector of {
+  | Ulist of {
       values : t list;
       mutability : Mutability.t;
       span : (Span.span[@compare.ignore]);
     }
   | Uslice of {
       value : Symbol.t;
+      start : t option;
+      finish : t option;
       readability : Readability.t;
       span : (Span.span[@compare.ignore]);
     }
@@ -182,12 +175,22 @@ type t =
       body : t;
       span : (Span.span[@compare.ignore]);
     }
+  | Uresume of {
+      continuation : Symbol.t;
+      value : t;
+      span : (Span.span[@compare.ignore]);
+    }
 [@@deriving compare, sexp]
 
 and closure =
   | Uclosure of {
       parameter : Symbol.t;
       value : t;
+      span : (Span.span[@compare.ignore]);
+    }
+  | Ususpend of {
+      continuation : Symbol.t;
+      body : t;
       span : (Span.span[@compare.ignore]);
     }
 [@@deriving compare, sexp]
@@ -203,6 +206,16 @@ and iterate =
     }
   | Udone
 [@@deriving compare, sexp]
+
+and alt =
+  | Ualt of {
+      tag : Symbol.t;
+      name : Symbol.t option;
+      expr : t;
+      span : (Span.span[@compare.ignore]);
+      rest : alt;
+    }
+  | Uno_match
 
 let default = Utuple { values = []; span = Span.default }
 let to_sexp_string t = Sexp.to_string (sexp_of_t t)
@@ -221,7 +234,7 @@ module Spanned : Span.SPANNED = struct
     | Umatch { span; _ }
     | Urecord { span; _ }
     | Utuple { span; _ }
-    | Uvector { span; _ }
+    | Ulist { span; _ }
     | Ustring { span; _ }
     | Uslice { span; _ }
     | Utuple_subscript { span; _ }
@@ -230,6 +243,7 @@ module Spanned : Span.SPANNED = struct
     | Ulet { span; _ }
     | Ulet_fun { span; _ }
     | Ulambda { closure = Uclosure { span; _ }; _ }
+    | Ulambda { closure = Ususpend { span; _ }; _ }
     | Udef { span; _ }
     | Uop { span; _ }
     | Uneg { span; _ }
@@ -241,6 +255,7 @@ module Spanned : Span.SPANNED = struct
     | Uderef { span; _ }
     | Uupdate_ref { span; _ }
     | Umutable_ref { span; _ }
+    | Uresume { span; _ }
     | Uassign_subscript { span; _ } ->
         span
 end
@@ -251,7 +266,7 @@ module Closure = struct
   module Spanned : Span.SPANNED = struct
     type nonrec t = t [@@deriving compare, sexp]
 
-    let span = function Uclosure { span; _ } -> span
+    let span = function Uclosure { span; _ } | Ususpend { span; _ } -> span
   end
 end
 

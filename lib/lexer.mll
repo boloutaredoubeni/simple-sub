@@ -47,6 +47,9 @@ rule token = parse
 | "with" { WITH }
 | "match" { MATCH }
 | "case" { CASE }
+| "suspend" { SUSPEND }
+| "resume" { RESUME }
+| "=>" { WIDE_ARROW }
 | "=" { EQUAL }
 | "<-" { LEFT_ARROW }
 | "->" { RIGHT_ARROW }
